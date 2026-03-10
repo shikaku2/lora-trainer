@@ -3,26 +3,22 @@
 submit_lora_job.py
 
 Usage:
-  RUNPOD_API_KEY=rp_xxx RUNPOD_ENDPOINT_ID=abc123 SSH_HOST=ssh.kung.pw python3 submit_lora_job.py
+  RUNPOD_API_KEY=rp_xxx RUNPOD_ENDPOINT_ID=abc123 HF_WRITE_TOKEN=hf_xxx python3 submit_lora_job.py
 
 Required env vars:
   RUNPOD_API_KEY        your RunPod API key
   RUNPOD_ENDPOINT_ID    the serverless endpoint ID
-  SSH_HOST              your server hostname/IP
+  HF_WRITE_TOKEN        HuggingFace write token
 
 Optional env vars (with defaults):
   JSONL_FILE            path to training JSONL        [alastor_train.jsonl]
-  SSH_KEY_FILE          path to your private key      [~/.ssh/id_ed25519]
-  SSH_PORT              SSH port                      [12369]
-  SSH_USER              SSH username                  [current user]
-  SSH_DEST              remote path for output        [/home/<user>/alastor-lora.tar.gz]
+  HF_REPO               HuggingFace repo ID           [shikaku2/magistral-alastor-lora]
   MODEL_PATH            HF repo                       [unsloth/Magistral-Small-2509]
   EPOCHS                training epochs               [3]
   RANK                  LoRA rank                     [16]
 """
 
 import base64
-import getpass
 import json
 import os
 import sys
@@ -40,30 +36,21 @@ def env(key, default=None, required=False):
 
 api_key     = env("RUNPOD_API_KEY",     required=True)
 endpoint_id = env("RUNPOD_ENDPOINT_ID", required=True)
-ssh_host    = env("SSH_HOST",           required=True)
+hf_token    = env("HF_WRITE_TOKEN",     required=True)
 
-jsonl_file   = env("JSONL_FILE",   "alastor_train.jsonl")
-ssh_key_file = env("SSH_KEY_FILE", str(Path.home() / ".ssh" / "id_ed25519"))
-ssh_port     = int(env("SSH_PORT", "22"))
-ssh_user     = env("SSH_USER",     getpass.getuser())
-ssh_dest     = env("SSH_DEST",     f"/home/{ssh_user}/alastor-lora.tar.gz")
-model_path   = env("MODEL_PATH",   "unsloth/Magistral-Small-2509")
-epochs       = int(env("EPOCHS",   "3"))
-rank         = int(env("RANK",     "16"))
+jsonl_file  = env("JSONL_FILE",  "alastor_train.jsonl")
+hf_repo     = env("HF_REPO",    "shikaku2/magistral-alastor-lora")
+model_path  = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
+epochs      = int(env("EPOCHS", "3"))
+rank        = int(env("RANK",   "16"))
 
 print(f"Encoding JSONL: {jsonl_file}")
 jsonl_b64 = base64.b64encode(Path(jsonl_file).read_bytes()).decode()
 
-print(f"Reading SSH key: {ssh_key_file}")
-ssh_key = Path(ssh_key_file).read_text()
-
 payload = json.dumps({"input": {
     "jsonl_b64":  jsonl_b64,
-    "ssh_host":   ssh_host,
-    "ssh_port":   ssh_port,
-    "ssh_user":   ssh_user,
-    "ssh_key":    ssh_key,
-    "ssh_dest":   ssh_dest,
+    "hf_token":   hf_token,
+    "hf_repo":    hf_repo,
     "model_path": model_path,
     "epochs":     epochs,
     "rank":       rank,
@@ -89,7 +76,6 @@ def api(method, path, data=None):
         print(f"HTTP {e.code}: {e.read().decode()}")
         sys.exit(1)
 
-# --- Submit ---
 print(f"Payload size: {len(payload) / 1024:.1f} KB")
 print(f"Submitting job to endpoint {endpoint_id}...")
 result = api("POST", "run", data=payload)
@@ -99,7 +85,6 @@ if not job_id:
     sys.exit(1)
 print(f"Job submitted: {job_id}")
 
-# --- Poll ---
 start = time.time()
 while True:
     time.sleep(15)
