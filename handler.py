@@ -46,7 +46,7 @@ log = logging.getLogger("lora-trainer")
 
 DEFAULT_MODEL = os.getenv(
     "MODEL_PATH",
-    "mistralai/Magistral-Small-2509",
+    "unsloth/Magistral-Small-2509",
 )
 
 TRAIN_SCRIPT = Path(__file__).parent / "train_lora.py"
