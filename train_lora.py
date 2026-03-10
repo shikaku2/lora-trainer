@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""
+QLoRA fine-tune of Magistral-Small-2509 on Alastor character examples.
+Uses mistral_common for correct tokenization + HuggingFace + PEFT for training.
+Works on ROCm (AMD) and CUDA. No Unsloth, no xformers required.
+
+Usage:
+    python train_lora.py --model ~/models/magistral-small-2509-bf16 --data alastor_train.jsonl
+"""
+
+import argparse
+import torch
+import json
+from pathlib import Path
+
+def load_tokenizer(model_path: str):
+    """
+    Use mistral_common for correct tokenization.
+    AutoTokenizer has a broken regex for Mistral models.
+    """
+    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    tok = MistralTokenizer.from_file(str(Path(model_path) / "tekken.json"))
+    return tok
+
+def pretokenize_dataset(data_path: str, model_path: str, max_seq_len: int, cache_path: str):
+    """
+    Pre-tokenize all examples using mistral_common and cache as a HF dataset.
+    Returns a HuggingFace Dataset of input_ids + labels.
+    """
+    from datasets import Dataset
+
+    cache = Path(cache_path)
+    if cache.exists():
+        print(f"Loading cached tokenized dataset from {cache_path}")
+        return Dataset.load_from_disk(cache_path)
+
+    print("Pre-tokenizing dataset with mistral_common...")
+    mc_tok = load_tokenizer(model_path)
+    # Get the underlying fast tokenizer encode function
+    encode = mc_tok.instruct_tokenizer.tokenizer.encode
+
+    records = []
+    skipped = 0
+    with open(data_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            text = json.loads(line)["text"]
+            # encode(text, bos=True, eos=True)
+            ids = encode(text, True, True)
+            if len(ids) > max_seq_len:
+                ids = ids[:max_seq_len]
+                skipped += 1
+            records.append({"input_ids": ids, "labels": ids.copy()})
+
+    if skipped:
+        print(f"  Truncated {skipped} examples to {max_seq_len} tokens")
+
+    dataset = Dataset.from_list(records)
+    dataset.save_to_disk(cache_path)
+    print(f"  Tokenized {len(dataset)} examples, saved to {cache_path}")
+    return dataset
+
+
+class SimpleCollator:
+    """
+    Pads input_ids and labels to the longest sequence in the batch.
+    Uses pad_token_id=0 (Mistral/tekken convention).
+    Labels are masked at pad positions with -100 so loss ignores them.
+    """
+    def __init__(self, pad_id: int = 0):
+        self.pad_id = pad_id
+
+    def __call__(self, features):
+        max_len = max(len(f["input_ids"]) for f in features)
+        # Round up to multiple of 8 for efficiency
+        max_len = ((max_len + 7) // 8) * 8
+
+        input_ids = []
+        labels = []
+        attention_mask = []
+
+        for f in features:
+            ids = f["input_ids"]
+            pad_len = max_len - len(ids)
+            input_ids.append(ids + [self.pad_id] * pad_len)
+            labels.append(f["labels"] + [-100] * pad_len)
+            attention_mask.append([1] * len(ids) + [0] * pad_len)
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+        }
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="mistralai/Magistral-Small-2509")
+    parser.add_argument("--data", default="alastor_train.jsonl")
+    parser.add_argument("--output", default="./alastor-lora")
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--rank", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument("--max-seq-len", type=int, default=2048)
+    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--no-4bit", action="store_true",
+                        help="Disable 4-bit quantization (uses more RAM)")
+    args = parser.parse_args()
+
+    use_4bit = not args.no_4bit
+    cache_path = args.data.replace(".jsonl", "_tokenized_cache")
+
+    if use_4bit and not torch.cuda.is_available():
+        print("WARNING: No GPU detected — disabling 4-bit quantization (CPU-only mode)")
+        use_4bit = False
+
+    # ----------------------------------------------------------------
+    # 1. Sanity check GPU
+    # ----------------------------------------------------------------
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA/ROCm available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"Device: {torch.cuda.get_device_name(0)}")
+
+    # ----------------------------------------------------------------
+    # 2. Pre-tokenize dataset using mistral_common
+    # ----------------------------------------------------------------
+    tokenized_dataset = pretokenize_dataset(
+        args.data, args.model, args.max_seq_len, cache_path
+    )
+    print(f"Dataset size: {len(tokenized_dataset)} examples")
+
+    # ----------------------------------------------------------------
+    # 3. Load model
+    # ----------------------------------------------------------------
+    from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
+
+    print(f"\nLoading model (4-bit={use_4bit})...")
+
+    device_map = "auto" if torch.cuda.is_available() else "cpu"
+
+    if use_4bit:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForImageTextToText.from_pretrained(
+            args.model,
+            quantization_config=bnb_config,
+            device_map=device_map,
+            trust_remote_code=True,
+        )
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(
+            args.model,
+            torch_dtype=torch.bfloat16,
+            device_map=device_map,
+            trust_remote_code=True,
+        )
+
+    model.config.use_cache = False
+
+    # ----------------------------------------------------------------
+    # 4. Freeze vision encoder
+    # ----------------------------------------------------------------
+    frozen = 0
+    for name, param in model.named_parameters():
+        if any(k in name.lower() for k in ("vision", "patch", "pixel")):
+            param.requires_grad = False
+            frozen += 1
+    print(f"Froze {frozen} vision encoder parameter tensors")
+
+    # ----------------------------------------------------------------
+    # 5. Attach LoRA adapters
+    # ----------------------------------------------------------------
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+
+    if use_4bit:
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=True,
+        )
+
+    lora_config = LoraConfig(
+        r=args.rank,
+        lora_alpha=args.rank * 2,
+        target_modules=[
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+
+    # ----------------------------------------------------------------
+    # 6. Training arguments
+    # ----------------------------------------------------------------
+    from transformers import TrainingArguments, Trainer
+
+    has_gpu = torch.cuda.is_available()
+    bf16_supported = has_gpu and torch.cuda.is_bf16_supported()
+
+    training_args = TrainingArguments(
+        output_dir=args.output,
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        gradient_checkpointing=True,
+        warmup_steps=10,
+        learning_rate=args.lr,
+        bf16=bf16_supported,
+        fp16=has_gpu and not bf16_supported,
+        logging_steps=5,
+        save_steps=50,
+        save_total_limit=2,
+        optim="adamw_8bit",
+        weight_decay=0.01,
+        lr_scheduler_type="cosine",
+        seed=42,
+        report_to="none",
+        dataloader_pin_memory=False,
+        remove_unused_columns=False,
+    )
+
+    # ----------------------------------------------------------------
+    # 7. Train
+    # ----------------------------------------------------------------
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_dataset,
+        data_collator=SimpleCollator(pad_id=0),
+    )
+
+    print("\nStarting training...")
+    trainer.train()
+
+    # ----------------------------------------------------------------
+    # 8. Save adapter
+    # ----------------------------------------------------------------
+    print(f"\nSaving LoRA adapter to {args.output}")
+    model.save_pretrained(args.output)
+
+    print("\nDone!")
+    print(f"\nNext step — convert adapter to GGUF for llama.cpp:")
+    print(f"  python llama.cpp/convert_lora_to_gguf.py {args.output}")
+    print(f"  llama-server --model ~/models/magistral-2509-vision/Magistral-Small-2509-Q3_K_S.gguf \\")
+    print(f"    --lora {args.output}-gguf \\")
+    print(f"    --n-gpu-layers 99 --port 8080")
+
+
+if __name__ == "__main__":
+    main()
