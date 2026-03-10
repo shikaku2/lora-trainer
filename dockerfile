@@ -12,7 +12,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /workspace
 
-# Training stack on top of the SGLang base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir \
     runpod \
     mistral-common \
@@ -21,8 +24,7 @@ RUN pip install --no-cache-dir \
     transformers \
     datasets \
     accelerate \
-    hf_transfer \
-    openssh-client
+    hf_transfer 
 
 COPY handler.py    /workspace/handler.py
 COPY train_lora.py /workspace/train_lora.py
