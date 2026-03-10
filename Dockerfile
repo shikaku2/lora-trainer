@@ -2,11 +2,9 @@
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 ENV PYTHONUNBUFFERED=1 \
-    # Point HF cache at the RunPod network volume so the model
-    # is downloaded once and reused across cold starts.
     HF_HOME=/runpod-volume/huggingface-cache \
-    TRANSFORMERS_CACHE=/runpod-volume/huggingface-cache \
-    HUGGINGFACE_HUB_CACHE=/runpod-volume/huggingface-cache \
+    TRANSFORMERS_CACHE=/runpod-volume/huggingface-cache/hub \
+    HUGGINGFACE_HUB_CACHE=/runpod-volume/huggingface-cache/hub \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     TRUST_REMOTE_CODE=true
 
