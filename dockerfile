@@ -1,6 +1,5 @@
-# Base: official SGLang GPU image (CUDA 12.x, PyTorch pre-installed)
-# We use it purely for the CUDA runtime — SGLang server is never started.
-FROM lmsysorg/sglang:latest
+# much leaner, still has CUDA + PyTorch
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 ENV PYTHONUNBUFFERED=1 \
     # Point HF cache at the RunPod network volume so the model
