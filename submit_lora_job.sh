@@ -29,10 +29,10 @@ set -euo pipefail
 
 JSONL_FILE="${JSONL_FILE:-alastor_train.jsonl}"
 SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}"
-SSH_PORT="${SSH_PORT:-22}"
+SSH_PORT="${SSH_PORT:-12369}"
 SSH_USER="${SSH_USER:-$(whoami)}"
 SSH_DEST="${SSH_DEST:-$HOME/alastor-lora.tar.gz}"
-MODEL_PATH="${MODEL_PATH:-mistralai/Magistral-Small-2509}"
+MODEL_PATH="${MODEL_PATH:-unsloth/Magistral-Small-2509}"
 EPOCHS="${EPOCHS:-3}"
 RANK="${RANK:-16}"
 
@@ -40,29 +40,22 @@ echo "Encoding JSONL: $JSONL_FILE"
 JSONL_B64=$(base64 -w 0 "$JSONL_FILE")
 
 echo "Reading SSH key: $SSH_KEY_FILE"
-SSH_KEY=$(cat "$SSH_KEY_FILE")
 
-PAYLOAD=$(jq -n \
-  --arg jsonl_b64  "$JSONL_B64" \
-  --arg ssh_host   "$SSH_HOST" \
-  --argjson ssh_port "$SSH_PORT" \
-  --arg ssh_user   "$SSH_USER" \
-  --arg ssh_key    "$SSH_KEY" \
-  --arg ssh_dest   "$SSH_DEST" \
-  --arg model_path "$MODEL_PATH" \
-  --argjson epochs "$EPOCHS" \
-  --argjson rank   "$RANK" \
-  '{input: {
-      jsonl_b64:  $jsonl_b64,
-      ssh_host:   $ssh_host,
-      ssh_port:   $ssh_port,
-      ssh_user:   $ssh_user,
-      ssh_key:    $ssh_key,
-      ssh_dest:   $ssh_dest,
-      model_path: $model_path,
-      epochs:     $epochs,
-      rank:       $rank
-  }}')
+PAYLOAD=$(python3 - <<EOF
+import json, sys
+print(json.dumps({"input": {
+    "jsonl_b64":  """$JSONL_B64""",
+    "ssh_host":   "$SSH_HOST",
+    "ssh_port":   $SSH_PORT,
+    "ssh_user":   "$SSH_USER",
+    "ssh_key":    open("$SSH_KEY_FILE").read(),
+    "ssh_dest":   "$SSH_DEST",
+    "model_path": "$MODEL_PATH",
+    "epochs":     $EPOCHS,
+    "rank":       $RANK,
+}}))
+EOF
+)
 
 echo "Submitting job to endpoint $RUNPOD_ENDPOINT_ID..."
 RESPONSE=$(curl -s -X POST \

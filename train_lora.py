@@ -17,9 +17,24 @@ def load_tokenizer(model_path: str):
     """
     Use mistral_common for correct tokenization.
     AutoTokenizer has a broken regex for Mistral models.
+    Handles both local paths and HF repo IDs.
     """
     from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
-    tok = MistralTokenizer.from_file(str(Path(model_path) / "tekken.json"))
+
+    local = Path(model_path)
+    if local.exists():
+        # Local path — look for tekken.json directly
+        tekken = local / "tekken.json"
+    else:
+        # HF repo ID — download just the tokenizer file
+        from huggingface_hub import hf_hub_download
+        # Try tekken.json first (official Mistral), fall back to tokenizer.model
+        try:
+            tekken = Path(hf_hub_download(repo_id=model_path, filename="tekken.json"))
+        except Exception:
+            tekken = Path(hf_hub_download(repo_id=model_path, filename="tokenizer.model"))
+
+    tok = MistralTokenizer.from_file(str(tekken))
     return tok
 
 def pretokenize_dataset(data_path: str, model_path: str, max_seq_len: int, cache_path: str):
