@@ -44,7 +44,7 @@ ssh_host    = env("SSH_HOST",           required=True)
 
 jsonl_file   = env("JSONL_FILE",   "alastor_train.jsonl")
 ssh_key_file = env("SSH_KEY_FILE", str(Path.home() / ".ssh" / "id_ed25519"))
-ssh_port     = int(env("SSH_PORT", "12369"))
+ssh_port     = int(env("SSH_PORT", "22"))
 ssh_user     = env("SSH_USER",     getpass.getuser())
 ssh_dest     = env("SSH_DEST",     f"/home/{ssh_user}/alastor-lora.tar.gz")
 model_path   = env("MODEL_PATH",   "unsloth/Magistral-Small-2509")
