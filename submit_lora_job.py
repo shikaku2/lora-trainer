@@ -76,6 +76,34 @@ def api(method, path, data=None):
         print(f"HTTP {e.code}: {e.read().decode()}")
         sys.exit(1)
 
+# Preflight: verify HF token can write to the repo before burning GPU time
+print(f"Checking HuggingFace access to {hf_repo}...")
+try:
+    import urllib.parse
+    hf_req = urllib.request.Request(
+        f"https://huggingface.co/api/models/{urllib.parse.quote(hf_repo, safe='/')}",
+        headers={"Authorization": f"Bearer {hf_token}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(hf_req, timeout=10) as r:
+        info = json.loads(r.read())
+    siblings = info.get("siblings", [])
+    print(f"HF repo accessible. ({len(siblings)} files currently)")
+except urllib.error.HTTPError as e:
+    if e.code == 401:
+        print("ERROR: HF token is invalid or expired.")
+    elif e.code == 403:
+        print("ERROR: HF token does not have write access to this repo.")
+    elif e.code == 404:
+        print(f"ERROR: Repo {hf_repo} not found. Did you create it and spell it right?")
+    else:
+        print(f"ERROR: HF preflight failed with HTTP {e.code}: {e.read().decode()}")
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: HF preflight failed: {e}")
+    sys.exit(1)
+print("HuggingFace preflight passed.")
+
 print(f"Payload size: {len(payload) / 1024:.1f} KB")
 print(f"Submitting job to endpoint {endpoint_id}...")
 result = api("POST", "run", data=payload)
