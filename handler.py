@@ -219,8 +219,12 @@ def run_training_job(event: dict) -> dict:
                 return {"status": "error", "message": "CPT stage failed",
                         "stage": "cpt", "logs": all_logs}
             log.info("CPT done in %.1fs — uploading checkpoint...", time.time() - t0)
-            _hf_upload(cpt_out, hf_repo_cpt, hf_token,
-                       f"CPT adapter after {epochs_cpt} epoch(s)")
+            try:
+                _hf_upload(cpt_out, hf_repo_cpt, hf_token,
+                           f"CPT adapter after {epochs_cpt} epoch(s)")
+            except Exception as e:
+                return {"status": "error", "message": f"CPT checkpoint upload failed: {e}",
+                        "stage": "cpt_upload", "logs": all_logs}
 
         # ----------------------------------------------------------------
         # Stage 2 — QLoRA  (continues from CPT adapter)
@@ -255,8 +259,12 @@ def run_training_job(event: dict) -> dict:
                 return {"status": "error", "message": "QLoRA stage failed",
                         "stage": "qlora", "logs": all_logs}
             log.info("QLoRA done in %.1fs — uploading checkpoint...", time.time() - t0)
-            _hf_upload(lora_out, hf_repo_qlora, hf_token,
-                       f"QLoRA adapter after {epochs_lora} epoch(s)")
+            try:
+                _hf_upload(lora_out, hf_repo_qlora, hf_token,
+                           f"QLoRA adapter after {epochs_lora} epoch(s)")
+            except Exception as e:
+                return {"status": "error", "message": f"QLoRA checkpoint upload failed: {e}",
+                        "stage": "qlora_upload", "logs": all_logs}
 
         # ----------------------------------------------------------------
         # Stage 3 — DPO  (continues from QLoRA adapter)
