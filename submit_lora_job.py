@@ -16,9 +16,9 @@ Required env vars:
   HF_WRITE_TOKEN        HuggingFace write token
 
 Optional env vars (with defaults):
-  CPT_FILE      plain-text CPT corpus       [build1/Alastor_CPT_Master.txt]
-  LORA_FILE     dialogue examples (txt)     [build1/New_LoRA_Examples.txt]
-  DPO_FILE      DPO preference pairs (jsonl)[build1/dpo_all_2026-03-19.jsonl]
+  CPT_FILE      plain-text CPT corpus       [cpt.txt]
+  LORA_FILE     dialogue examples (txt)     [lora.txt]
+  DPO_FILE      DPO preference pairs (jsonl)[dpo.jsonl]
   HF_REPO       HuggingFace repo ID         [shikaku2/magistral-alastor-lora]
   MODEL_PATH    HF repo or local path       [unsloth/Magistral-Small-2509]
   EPOCHS_CPT    CPT epochs                  [1]
@@ -65,7 +65,10 @@ def parse_lora_examples(text_path: str) -> bytes:
     lines = []
     for block in blocks:
         block = block.strip()
-        if not block or not re.match(r"EXAMPLE\s+\d+", block):
+        if not block:
+            continue
+        # Accept "EXAMPLE N:", "EXAMPLES N:" (typo), or blocks starting directly with USER:
+        if not re.match(r"EXAMPLES?\s+\d+", block) and not block.startswith("USER:"):
             continue
 
         user_m  = re.search(r"^USER:\s*(.+?)(?=\nREPLY:)", block,
@@ -96,9 +99,9 @@ api_key     = env("RUNPOD_API_KEY",     required=True)
 endpoint_id = env("RUNPOD_ENDPOINT_ID", required=True)
 hf_token    = env("HF_WRITE_TOKEN",     required=True)
 
-cpt_file    = env("CPT_FILE",   "build1/Alastor_CPT_Master.txt")
-lora_file   = env("LORA_FILE",  "build1/New_LoRA_Examples.txt")
-dpo_file    = env("DPO_FILE",   "build1/dpo_all_2026-03-19.jsonl")
+cpt_file    = env("CPT_FILE",   "cpt.txt")
+lora_file   = env("LORA_FILE",  "lora.txt")
+dpo_file    = env("DPO_FILE",   "dpo.jsonl")
 hf_repo     = env("HF_REPO",    "shikaku2/magistral-alastor-lora")
 model_path  = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
 epochs_cpt  = int(env("EPOCHS_CPT",  "1"))

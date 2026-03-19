@@ -119,7 +119,9 @@ def main():
     # 4. Tokenizer
     # ----------------------------------------------------------------
     # unsloth/ variants work with AutoTokenizer; the raw mistralai/ does not.
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model, trust_remote_code=True, fix_mistral_regex=True
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"   # DPO requires left-padding

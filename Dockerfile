@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir \
     transformers \
     datasets \
     accelerate \
-    trl \
+    "trl==0.12.2" \
     hf_transfer
 
 COPY handler.py    /workspace/handler.py
