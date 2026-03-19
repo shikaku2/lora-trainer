@@ -99,9 +99,10 @@ def _hf_repo_has_adapter(repo_id: str, token: str) -> bool:
     try:
         from huggingface_hub import HfApi
         api = HfApi(token=token)
-        files = [f.rfilename for f in api.list_repo_files(repo_id, repo_type="model")]
+        files = list(api.list_repo_files(repo_id, repo_type="model"))
         return any("adapter_model" in f for f in files)
-    except Exception:
+    except Exception as e:
+        log.debug("_hf_repo_has_adapter(%s): %s", repo_id, e)
         return False
 
 
