@@ -76,7 +76,7 @@ def main():
     # ----------------------------------------------------------------
     # 2. Load base model
     # ----------------------------------------------------------------
-    from transformers import AutoModelForImageTextToText, AutoTokenizer, BitsAndBytesConfig
+    from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
     from peft import PeftModel, prepare_model_for_kbit_training
 
     device_map = "auto" if torch.cuda.is_available() else "cpu"
@@ -116,13 +116,25 @@ def main():
     model.print_trainable_parameters()
 
     # ----------------------------------------------------------------
-    # 4. Tokenizer
+    # 4. Tokenizer — use mistral_common, same as CPT/QLoRA stages
     # ----------------------------------------------------------------
-    # unsloth/ variants work with AutoTokenizer; the raw mistralai/ does not.
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"   # DPO requires left-padding
+    # AutoTokenizer has a broken regex for Mistral models; mistral_common is correct.
+    # We wrap it in a minimal HuggingFace-compatible shim so TRL can use it.
+    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    from transformers import PreTrainedTokenizerFast
+    mc_tok = MistralTokenizer.from_hf_hub(args.model)
+    # mistral_common exposes the underlying HuggingFace fast tokenizer
+    inner = mc_tok.instruct_tokenizer.tokenizer
+    hf_tokenizer = inner._tokenizer          # underlying tokenizers.Tokenizer
+
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=hf_tokenizer,
+        bos_token="<s>",
+        eos_token="</s>",
+        unk_token="<unk>",
+        pad_token="</s>",    # use eos as pad
+        padding_side="left", # DPO requires left-padding
+    )
 
     # ----------------------------------------------------------------
     # 5. DPO training
@@ -153,7 +165,6 @@ def main():
         remove_unused_columns=False,
         beta=args.beta,
         max_length=args.max_seq_len,
-        max_prompt_length=args.max_seq_len // 2,
     )
 
     # ref_model=None + a PEFT model → TRL uses the frozen base as implicit reference
