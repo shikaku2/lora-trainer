@@ -115,6 +115,9 @@ def main():
     parser.add_argument("--model", default="mistralai/Magistral-Small-2509")
     parser.add_argument("--data", default="alastor_train.jsonl")
     parser.add_argument("--output", default="./alastor-lora")
+    parser.add_argument("--adapter", default=None,
+                        help="Path to existing LoRA adapter to continue training from "
+                             "(e.g. output of train_cpt.py). If omitted a fresh adapter is created.")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--rank", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -193,7 +196,7 @@ def main():
     # ----------------------------------------------------------------
     # 5. Attach LoRA adapters
     # ----------------------------------------------------------------
-    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
 
     if use_4bit:
         model = prepare_model_for_kbit_training(
@@ -201,19 +204,24 @@ def main():
             use_gradient_checkpointing=True,
         )
 
-    lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank * 2,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
+    if args.adapter:
+        # Continue training an existing adapter (e.g. produced by train_cpt.py)
+        print(f"Loading existing LoRA adapter from {args.adapter}")
+        model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
+    else:
+        lora_config = LoraConfig(
+            r=args.rank,
+            lora_alpha=args.rank * 2,
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
 
-    model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
     # ----------------------------------------------------------------

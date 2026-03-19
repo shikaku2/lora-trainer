@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """
-RunPod serverless handler for QLoRA fine-tuning.
-Uploads the resulting LoRA adapter to HuggingFace Hub.
+RunPod serverless handler — full 3-stage training pipeline:
+  Stage 1  CPT   (Continued Pre-Training)  on plain-text corpus
+  Stage 2  QLoRA (instruction fine-tuning) on dialogue examples
+  Stage 3  DPO   (preference alignment)    on chosen/rejected pairs
+
+Each stage loads the adapter produced by the previous stage, so the
+final DPO adapter contains all three layers of training.
 
 Job input fields:
-  jsonl_b64   (str)  – base64-encoded JSONL training data         [required]
-  hf_token    (str)  – HuggingFace write token                    [required]
-  hf_repo     (str)  – HF repo ID e.g. "shikaku2/my-lora"        [required]
-  model_path  (str)  – HF repo or local path (defaults to env MODEL_PATH)
-  epochs      (int)  – default 3
-  rank        (int)  – LoRA rank, default 16
-  max_seq_len (int)  – default 2048
-  lr          (float)– default 2e-4
+  cpt_b64     (str)  – base64-encoded plain-text CPT corpus          [required]
+  lora_b64    (str)  – base64-encoded JSONL dialogue examples        [required]
+  dpo_b64     (str)  – base64-encoded JSONL DPO preference pairs     [required]
+  hf_token    (str)  – HuggingFace write token                       [required]
+  hf_repo     (str)  – HF repo ID  e.g. "shikaku2/my-model"         [required]
+  model_path  (str)  – HF repo or local path (default: MODEL_PATH env)
+  epochs_cpt  (int)  – CPT epochs  (default 1)
+  epochs_lora (int)  – QLoRA epochs (default 3)
+  epochs_dpo  (int)  – DPO epochs  (default 1)
+  rank        (int)  – LoRA rank   (default 16)
+  max_seq_len (int)  – sequence length cap (default 2048)
+  lr_cpt      (float)– CPT learning rate   (default 1e-4)
+  lr_lora     (float)– QLoRA learning rate (default 2e-4)
+  lr_dpo      (float)– DPO learning rate   (default 5e-5)
+  beta        (float)– DPO beta            (default 0.1)
   no_4bit     (bool) – disable 4-bit quant (default False)
 """
 
 import os
 import sys
 import base64
-import json
 import logging
 import subprocess
 import tempfile
@@ -35,8 +46,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("lora-trainer")
 
-DEFAULT_MODEL = os.getenv("MODEL_PATH", "unsloth/Magistral-Small-2509")
-TRAIN_SCRIPT = Path(__file__).parent / "train_lora.py"
+DEFAULT_MODEL  = os.getenv("MODEL_PATH", "unsloth/Magistral-Small-2509")
+SCRIPT_DIR     = Path(__file__).parent
+TRAIN_CPT      = SCRIPT_DIR / "train_cpt.py"
+TRAIN_LORA     = SCRIPT_DIR / "train_lora.py"
+TRAIN_DPO      = SCRIPT_DIR / "train_dpo.py"
 
 
 def _run(cmd, cwd=None, timeout=7200, log_prefix=""):
@@ -64,96 +78,167 @@ def _run(cmd, cwd=None, timeout=7200, log_prefix=""):
     return proc.returncode, lines[-100:]
 
 
+def _decode(b64_field: str, label: str):
+    try:
+        return base64.b64decode(b64_field)
+    except Exception as e:
+        raise ValueError(f"Failed to decode {label}: {e}") from e
+
+
 def run_training_job(event: dict) -> dict:
-    jsonl_b64  = event.get("jsonl_b64")
-    hf_token   = event.get("hf_token")
-    hf_repo    = event.get("hf_repo")
+    # ----------------------------------------------------------------
+    # Validate required inputs
+    # ----------------------------------------------------------------
+    for field in ("cpt_b64", "lora_b64", "dpo_b64", "hf_token", "hf_repo"):
+        if not event.get(field):
+            return {"status": "error", "message": f"Missing required field: {field}"}
 
-    if not jsonl_b64:
-        return {"status": "error", "message": "Missing required field: jsonl_b64"}
-    if not hf_token:
-        return {"status": "error", "message": "Missing required field: hf_token"}
-    if not hf_repo:
-        return {"status": "error", "message": "Missing required field: hf_repo"}
-
-    model_path = event.get("model_path") or DEFAULT_MODEL
-    epochs     = int(event.get("epochs",      3))
-    rank       = int(event.get("rank",        16))
-    max_seq    = int(event.get("max_seq_len", 2048))
-    lr         = float(event.get("lr",        2e-4))
-    no_4bit    = bool(event.get("no_4bit",    False))
+    model_path  = event.get("model_path") or DEFAULT_MODEL
+    epochs_cpt  = int(event.get("epochs_cpt",  1))
+    epochs_lora = int(event.get("epochs_lora", 3))
+    epochs_dpo  = int(event.get("epochs_dpo",  1))
+    rank        = int(event.get("rank",        16))
+    max_seq     = int(event.get("max_seq_len", 2048))
+    lr_cpt      = float(event.get("lr_cpt",   1e-4))
+    lr_lora     = float(event.get("lr_lora",  2e-4))
+    lr_dpo      = float(event.get("lr_dpo",   5e-5))
+    beta        = float(event.get("beta",      0.1))
+    no_4bit     = bool(event.get("no_4bit",    False))
+    hf_token    = event["hf_token"]
+    hf_repo     = event["hf_repo"]
 
     with tempfile.TemporaryDirectory(prefix="lora_job_") as workdir:
         workdir = Path(workdir)
 
-        # Write JSONL
-        try:
-            jsonl_bytes = base64.b64decode(jsonl_b64)
-        except Exception as e:
-            return {"status": "error", "message": f"Failed to decode jsonl_b64: {e}"}
+        # Write input files
+        cpt_path  = workdir / "cpt_corpus.txt"
+        lora_path = workdir / "lora_train.jsonl"
+        dpo_path  = workdir / "dpo_train.jsonl"
 
-        jsonl_path = workdir / "train.jsonl"
-        jsonl_path.write_bytes(jsonl_bytes)
-        line_count = sum(1 for l in jsonl_bytes.decode().splitlines() if l.strip())
-        log.info("Wrote %d training examples", line_count)
+        cpt_path.write_bytes(_decode(event["cpt_b64"],  "cpt_b64"))
+        lora_path.write_bytes(_decode(event["lora_b64"], "lora_b64"))
+        dpo_path.write_bytes(_decode(event["dpo_b64"],  "dpo_b64"))
 
-        # Train
-        output_dir = workdir / "lora-output"
+        lora_count = sum(1 for l in lora_path.read_text().splitlines() if l.strip())
+        dpo_count  = sum(1 for l in dpo_path.read_text().splitlines()  if l.strip())
+        log.info("Inputs: CPT %d bytes, %d QLoRA examples, %d DPO pairs",
+                 cpt_path.stat().st_size, lora_count, dpo_count)
+
+        cpt_out  = workdir / "cpt-output"
+        lora_out = workdir / "lora-output"
+        dpo_out  = workdir / "dpo-output"
+
+        all_logs = []
+        t_total  = time.time()
+
+        no4bit_flag = ["--no-4bit"] if no_4bit else []
+
+        # ----------------------------------------------------------------
+        # Stage 1 — CPT
+        # ----------------------------------------------------------------
+        log.info("=== Stage 1/3: CPT ===")
+        t0 = time.time()
         cmd = [
-            sys.executable, str(TRAIN_SCRIPT),
+            sys.executable, str(TRAIN_CPT),
             "--model",       model_path,
-            "--data",        str(jsonl_path),
-            "--output",      str(output_dir),
-            "--epochs",      str(epochs),
+            "--data",        str(cpt_path),
+            "--output",      str(cpt_out),
+            "--epochs",      str(epochs_cpt),
             "--rank",        str(rank),
             "--max-seq-len", str(max_seq),
-            "--lr",          str(lr),
+            "--lr",          str(lr_cpt),
+            *no4bit_flag,
         ]
-        if no_4bit:
-            cmd.append("--no-4bit")
-
-        log.info("Starting training...")
-        t0 = time.time()
-        rc, train_lines = _run(cmd, cwd=str(workdir))
-        elapsed = time.time() - t0
-
+        rc, lines = _run(cmd, cwd=str(workdir), log_prefix="[CPT] ")
+        all_logs += lines
         if rc != 0:
-            return {
-                "status": "error",
-                "message": f"Training script exited with code {rc}",
-                "logs": train_lines,
-            }
+            return {"status": "error", "message": "CPT stage failed",
+                    "stage": "cpt", "logs": all_logs}
+        log.info("CPT done in %.1fs", time.time() - t0)
 
-        log.info("Training complete in %.1fs", elapsed)
+        # ----------------------------------------------------------------
+        # Stage 2 — QLoRA  (continues from CPT adapter)
+        # ----------------------------------------------------------------
+        log.info("=== Stage 2/3: QLoRA ===")
+        t0 = time.time()
+        cmd = [
+            sys.executable, str(TRAIN_LORA),
+            "--model",       model_path,
+            "--adapter",     str(cpt_out),
+            "--data",        str(lora_path),
+            "--output",      str(lora_out),
+            "--epochs",      str(epochs_lora),
+            "--rank",        str(rank),
+            "--max-seq-len", str(max_seq),
+            "--lr",          str(lr_lora),
+            *no4bit_flag,
+        ]
+        rc, lines = _run(cmd, cwd=str(workdir), log_prefix="[QLoRA] ")
+        all_logs += lines
+        if rc != 0:
+            return {"status": "error", "message": "QLoRA stage failed",
+                    "stage": "qlora", "logs": all_logs}
+        log.info("QLoRA done in %.1fs", time.time() - t0)
 
-        # Upload to HuggingFace
-        log.info("Uploading adapter to %s...", hf_repo)
+        # ----------------------------------------------------------------
+        # Stage 3 — DPO  (continues from QLoRA adapter)
+        # ----------------------------------------------------------------
+        log.info("=== Stage 3/3: DPO ===")
+        t0 = time.time()
+        cmd = [
+            sys.executable, str(TRAIN_DPO),
+            "--model",       model_path,
+            "--adapter",     str(lora_out),
+            "--data",        str(dpo_path),
+            "--output",      str(dpo_out),
+            "--epochs",      str(epochs_dpo),
+            "--max-seq-len", str(max_seq),
+            "--lr",          str(lr_dpo),
+            "--beta",        str(beta),
+            *no4bit_flag,
+        ]
+        rc, lines = _run(cmd, cwd=str(workdir), log_prefix="[DPO] ")
+        all_logs += lines
+        if rc != 0:
+            return {"status": "error", "message": "DPO stage failed",
+                    "stage": "dpo", "logs": all_logs}
+        log.info("DPO done in %.1fs", time.time() - t0)
+
+        total_elapsed = time.time() - t_total
+        log.info("All 3 stages complete in %.1fs", total_elapsed)
+
+        # ----------------------------------------------------------------
+        # Upload final DPO adapter to HuggingFace
+        # ----------------------------------------------------------------
+        log.info("Uploading final adapter to %s...", hf_repo)
         try:
             from huggingface_hub import HfApi
             api = HfApi(token=hf_token)
             api.upload_folder(
-                folder_path=str(output_dir),
+                folder_path=str(dpo_out),
                 repo_id=hf_repo,
                 repo_type="model",
-                commit_message=f"LoRA adapter trained for {elapsed:.0f}s on {line_count} examples",
+                commit_message=(
+                    f"CPT→QLoRA→DPO adapter trained in {total_elapsed:.0f}s "
+                    f"({lora_count} QLoRA examples, {dpo_count} DPO pairs)"
+                ),
             )
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"HuggingFace upload failed: {e}",
-                "logs": train_lines,
-            }
+            return {"status": "error",
+                    "message": f"HuggingFace upload failed: {e}",
+                    "logs": all_logs}
 
         return {
             "status": "ok",
             "message": (
-                f"Training complete in {elapsed:.0f}s. "
+                f"CPT→QLoRA→DPO pipeline complete in {total_elapsed:.0f}s. "
                 f"Adapter uploaded to https://huggingface.co/{hf_repo}"
             ),
-            "hf_repo": hf_repo,
-            "training_seconds": round(elapsed),
-            "examples": line_count,
-            "logs": train_lines,
+            "hf_repo":           hf_repo,
+            "training_seconds":  round(total_elapsed),
+            "qlora_examples":    lora_count,
+            "dpo_pairs":         dpo_count,
+            "logs":              all_logs,
         }
 
 
@@ -168,12 +253,12 @@ def handler(job: dict) -> dict:
     except Exception as e:
         log.exception("Unhandled exception: %s", e)
         return {
-            "status": "error",
-            "message": str(e),
+            "status":    "error",
+            "message":   str(e),
             "traceback": traceback.format_exc(),
         }
 
 
 if __name__ == "__main__":
-    log.info("Starting RunPod LoRA trainer worker.")
+    log.info("Starting RunPod CPT+QLoRA+DPO trainer worker.")
     runpod.serverless.start({"handler": handler})
