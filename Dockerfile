@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir \
     datasets \
     accelerate \
     trl \
-    hf_transfer
+    hf_transfer \
+    protobuf
 
 COPY handler.py    /workspace/handler.py
 COPY train_lora.py /workspace/train_lora.py
