@@ -104,10 +104,13 @@ lora_file   = env("LORA_FILE",  "lora.txt")
 dpo_file    = env("DPO_FILE",   "dpo.jsonl")
 hf_repo     = env("HF_REPO",    "shikaku2/magistral-alastor-lora")
 model_path  = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
-epochs_cpt  = int(env("EPOCHS_CPT",  "1"))
-epochs_lora = int(env("EPOCHS_LORA", "3"))
-epochs_dpo  = int(env("EPOCHS_DPO",  "1"))
-rank        = int(env("RANK",        "16"))
+epochs_cpt   = int(env("EPOCHS_CPT",  "1"))
+epochs_lora  = int(env("EPOCHS_LORA", "3"))
+epochs_dpo   = int(env("EPOCHS_DPO",  "1"))
+rank         = int(env("RANK",        "16"))
+force_cpt   = env("FORCE_CPT",   "0") == "1"
+force_qlora = env("FORCE_QLORA", "0") == "1"
+force_dpo   = env("FORCE_DPO",   "0") == "1"
 
 # ----------------------------------------------------------------
 # Encode files
@@ -131,10 +134,13 @@ payload = json.dumps({"input": {
     "hf_token":    hf_token,
     "hf_repo":     hf_repo,
     "model_path":  model_path,
-    "epochs_cpt":  epochs_cpt,
-    "epochs_lora": epochs_lora,
-    "epochs_dpo":  epochs_dpo,
-    "rank":        rank,
+    "epochs_cpt":   epochs_cpt,
+    "epochs_lora":  epochs_lora,
+    "epochs_dpo":   epochs_dpo,
+    "rank":         rank,
+    "force_cpt":    force_cpt,
+    "force_qlora":  force_qlora,
+    "force_dpo":    force_dpo,
 }}).encode()
 
 HEADERS = {

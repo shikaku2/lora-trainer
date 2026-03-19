@@ -190,7 +190,12 @@ def run_training_job(event: dict) -> dict:
         # ----------------------------------------------------------------
         # Stage 1 — CPT
         # ----------------------------------------------------------------
-        if not force_cpt and _hf_repo_has_adapter(hf_repo_cpt, hf_token):
+        cpt_on_hf = _hf_repo_has_adapter(hf_repo_cpt, hf_token)
+        if not force_cpt and (force_dpo or force_qlora or cpt_on_hf):
+            if not cpt_on_hf:
+                return {"status": "error",
+                        "message": f"FORCE_DPO/FORCE_QLORA set but no CPT checkpoint found at "
+                                   f"{hf_repo_cpt}. Run without force flags to train from scratch."}
             log.info("=== Stage 1/3: CPT — skipping (found %s) ===", hf_repo_cpt)
             _hf_download(hf_repo_cpt, hf_token, cpt_out)
             skipped.append("cpt")
@@ -220,7 +225,12 @@ def run_training_job(event: dict) -> dict:
         # ----------------------------------------------------------------
         # Stage 2 — QLoRA  (continues from CPT adapter)
         # ----------------------------------------------------------------
-        if not force_qlora and _hf_repo_has_adapter(hf_repo_qlora, hf_token):
+        qlora_on_hf = _hf_repo_has_adapter(hf_repo_qlora, hf_token)
+        if not force_qlora and (force_dpo or qlora_on_hf):
+            if not qlora_on_hf:
+                return {"status": "error",
+                        "message": f"FORCE_DPO set but no QLoRA checkpoint found at "
+                                   f"{hf_repo_qlora}. Run without force flags to train from scratch."}
             log.info("=== Stage 2/3: QLoRA — skipping (found %s) ===", hf_repo_qlora)
             _hf_download(hf_repo_qlora, hf_token, lora_out)
             skipped.append("qlora")
