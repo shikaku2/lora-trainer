@@ -5,8 +5,14 @@ RunPod serverless handler — full 3-stage training pipeline:
   Stage 2  QLoRA (instruction fine-tuning) on dialogue examples
   Stage 3  DPO   (preference alignment)    on chosen/rejected pairs
 
-Each stage loads the adapter produced by the previous stage, so the
-final DPO adapter contains all three layers of training.
+Each stage uploads its adapter to HuggingFace immediately after completing.
+On the next run, completed stages are downloaded and skipped automatically,
+so a failure mid-pipeline only reruns the remaining stages.
+
+Intermediate repos:
+  {hf_repo}-cpt   → CPT adapter
+  {hf_repo}-qlora → QLoRA adapter
+  {hf_repo}       → final DPO adapter (the one you actually use)
 
 Job input fields:
   cpt_b64     (str)  – base64-encoded plain-text CPT corpus          [required]
@@ -25,6 +31,9 @@ Job input fields:
   lr_dpo      (float)– DPO learning rate   (default 5e-5)
   beta        (float)– DPO beta            (default 0.1)
   no_4bit     (bool) – disable 4-bit quant (default False)
+  force_cpt   (bool) – re-run CPT even if checkpoint exists (default False)
+  force_qlora (bool) – re-run QLoRA even if checkpoint exists (default False)
+  force_dpo   (bool) – re-run DPO even if checkpoint exists (default False)
 """
 
 import os
@@ -85,6 +94,44 @@ def _decode(b64_field: str, label: str):
         raise ValueError(f"Failed to decode {label}: {e}") from e
 
 
+def _hf_repo_has_adapter(repo_id: str, token: str) -> bool:
+    """Return True if the HF repo exists and contains adapter weights."""
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+        files = [f.rfilename for f in api.list_repo_files(repo_id, repo_type="model")]
+        return any("adapter_model" in f for f in files)
+    except Exception:
+        return False
+
+
+def _hf_download(repo_id: str, token: str, local_dir: Path):
+    """Download a HF repo to local_dir."""
+    from huggingface_hub import snapshot_download
+    log.info("Downloading existing adapter from %s...", repo_id)
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="model",
+        token=token,
+        local_dir=str(local_dir),
+    )
+    log.info("Downloaded to %s", local_dir)
+
+
+def _hf_upload(local_dir: Path, repo_id: str, token: str, commit_message: str):
+    """Upload local_dir to a HF repo, creating it if needed."""
+    from huggingface_hub import HfApi
+    api = HfApi(token=token)
+    api.create_repo(repo_id, repo_type="model", exist_ok=True, private=True)
+    api.upload_folder(
+        folder_path=str(local_dir),
+        repo_id=repo_id,
+        repo_type="model",
+        commit_message=commit_message,
+    )
+    log.info("Uploaded %s to https://huggingface.co/%s", local_dir.name, repo_id)
+
+
 def run_training_job(event: dict) -> dict:
     # ----------------------------------------------------------------
     # Validate required inputs
@@ -103,9 +150,15 @@ def run_training_job(event: dict) -> dict:
     lr_lora     = float(event.get("lr_lora",  2e-4))
     lr_dpo      = float(event.get("lr_dpo",   5e-5))
     beta        = float(event.get("beta",      0.1))
-    no_4bit     = bool(event.get("no_4bit",    False))
+    no_4bit     = bool(event.get("no_4bit",     False))
+    force_cpt   = bool(event.get("force_cpt",   False))
+    force_qlora = bool(event.get("force_qlora", False))
+    force_dpo   = bool(event.get("force_dpo",   False))
     hf_token    = event["hf_token"]
     hf_repo     = event["hf_repo"]
+
+    hf_repo_cpt   = f"{hf_repo}-cpt"
+    hf_repo_qlora = f"{hf_repo}-qlora"
 
     with tempfile.TemporaryDirectory(prefix="lora_job_") as workdir:
         workdir = Path(workdir)
@@ -130,59 +183,91 @@ def run_training_job(event: dict) -> dict:
 
         all_logs = []
         t_total  = time.time()
+        skipped  = []
 
         no4bit_flag = ["--no-4bit"] if no_4bit else []
 
         # ----------------------------------------------------------------
         # Stage 1 — CPT
         # ----------------------------------------------------------------
-        log.info("=== Stage 1/3: CPT ===")
-        t0 = time.time()
-        cmd = [
-            sys.executable, str(TRAIN_CPT),
-            "--model",       model_path,
-            "--data",        str(cpt_path),
-            "--output",      str(cpt_out),
-            "--epochs",      str(epochs_cpt),
-            "--rank",        str(rank),
-            "--max-seq-len", str(max_seq),
-            "--lr",          str(lr_cpt),
-            *no4bit_flag,
-        ]
-        rc, lines = _run(cmd, cwd=str(workdir), log_prefix="[CPT] ")
-        all_logs += lines
-        if rc != 0:
-            return {"status": "error", "message": "CPT stage failed",
-                    "stage": "cpt", "logs": all_logs}
-        log.info("CPT done in %.1fs", time.time() - t0)
+        if not force_cpt and _hf_repo_has_adapter(hf_repo_cpt, hf_token):
+            log.info("=== Stage 1/3: CPT — skipping (found %s) ===", hf_repo_cpt)
+            _hf_download(hf_repo_cpt, hf_token, cpt_out)
+            skipped.append("cpt")
+        else:
+            log.info("=== Stage 1/3: CPT ===")
+            t0 = time.time()
+            cmd = [
+                sys.executable, str(TRAIN_CPT),
+                "--model",       model_path,
+                "--data",        str(cpt_path),
+                "--output",      str(cpt_out),
+                "--epochs",      str(epochs_cpt),
+                "--rank",        str(rank),
+                "--max-seq-len", str(max_seq),
+                "--lr",          str(lr_cpt),
+                *no4bit_flag,
+            ]
+            rc, lines = _run(cmd, cwd=str(workdir), log_prefix="[CPT] ")
+            all_logs += lines
+            if rc != 0:
+                return {"status": "error", "message": "CPT stage failed",
+                        "stage": "cpt", "logs": all_logs}
+            log.info("CPT done in %.1fs — uploading checkpoint...", time.time() - t0)
+            _hf_upload(cpt_out, hf_repo_cpt, hf_token,
+                       f"CPT adapter after {epochs_cpt} epoch(s)")
 
         # ----------------------------------------------------------------
         # Stage 2 — QLoRA  (continues from CPT adapter)
         # ----------------------------------------------------------------
-        log.info("=== Stage 2/3: QLoRA ===")
-        t0 = time.time()
-        cmd = [
-            sys.executable, str(TRAIN_LORA),
-            "--model",       model_path,
-            "--adapter",     str(cpt_out),
-            "--data",        str(lora_path),
-            "--output",      str(lora_out),
-            "--epochs",      str(epochs_lora),
-            "--rank",        str(rank),
-            "--max-seq-len", str(max_seq),
-            "--lr",          str(lr_lora),
-            *no4bit_flag,
-        ]
-        rc, lines = _run(cmd, cwd=str(workdir), log_prefix="[QLoRA] ")
-        all_logs += lines
-        if rc != 0:
-            return {"status": "error", "message": "QLoRA stage failed",
-                    "stage": "qlora", "logs": all_logs}
-        log.info("QLoRA done in %.1fs", time.time() - t0)
+        if not force_qlora and _hf_repo_has_adapter(hf_repo_qlora, hf_token):
+            log.info("=== Stage 2/3: QLoRA — skipping (found %s) ===", hf_repo_qlora)
+            _hf_download(hf_repo_qlora, hf_token, lora_out)
+            skipped.append("qlora")
+        else:
+            log.info("=== Stage 2/3: QLoRA ===")
+            t0 = time.time()
+            cmd = [
+                sys.executable, str(TRAIN_LORA),
+                "--model",       model_path,
+                "--adapter",     str(cpt_out),
+                "--data",        str(lora_path),
+                "--output",      str(lora_out),
+                "--epochs",      str(epochs_lora),
+                "--rank",        str(rank),
+                "--max-seq-len", str(max_seq),
+                "--lr",          str(lr_lora),
+                *no4bit_flag,
+            ]
+            rc, lines = _run(cmd, cwd=str(workdir), log_prefix="[QLoRA] ")
+            all_logs += lines
+            if rc != 0:
+                return {"status": "error", "message": "QLoRA stage failed",
+                        "stage": "qlora", "logs": all_logs}
+            log.info("QLoRA done in %.1fs — uploading checkpoint...", time.time() - t0)
+            _hf_upload(lora_out, hf_repo_qlora, hf_token,
+                       f"QLoRA adapter after {epochs_lora} epoch(s)")
 
         # ----------------------------------------------------------------
         # Stage 3 — DPO  (continues from QLoRA adapter)
         # ----------------------------------------------------------------
+        if not force_dpo and _hf_repo_has_adapter(hf_repo, hf_token):
+            log.info("=== Stage 3/3: DPO — skipping (found %s) ===", hf_repo)
+            skipped.append("dpo")
+            total_elapsed = time.time() - t_total
+            skipped_str = f" (skipped: {', '.join(skipped)})"
+            return {
+                "status": "ok",
+                "message": f"Pipeline complete in {total_elapsed:.0f}s{skipped_str}. "
+                           f"Adapter at https://huggingface.co/{hf_repo}",
+                "hf_repo":          hf_repo,
+                "training_seconds": round(total_elapsed),
+                "qlora_examples":   lora_count,
+                "dpo_pairs":        dpo_count,
+                "skipped_stages":   skipped,
+                "logs":             all_logs,
+            }
+
         log.info("=== Stage 3/3: DPO ===")
         t0 = time.time()
         cmd = [
@@ -205,40 +290,33 @@ def run_training_job(event: dict) -> dict:
         log.info("DPO done in %.1fs", time.time() - t0)
 
         total_elapsed = time.time() - t_total
-        log.info("All 3 stages complete in %.1fs", total_elapsed)
+        log.info("All stages complete in %.1fs", total_elapsed)
 
         # ----------------------------------------------------------------
-        # Upload final DPO adapter to HuggingFace
+        # Upload final DPO adapter
         # ----------------------------------------------------------------
         log.info("Uploading final adapter to %s...", hf_repo)
         try:
-            from huggingface_hub import HfApi
-            api = HfApi(token=hf_token)
-            api.upload_folder(
-                folder_path=str(dpo_out),
-                repo_id=hf_repo,
-                repo_type="model",
-                commit_message=(
-                    f"CPT→QLoRA→DPO adapter trained in {total_elapsed:.0f}s "
-                    f"({lora_count} QLoRA examples, {dpo_count} DPO pairs)"
-                ),
-            )
+            _hf_upload(dpo_out, hf_repo, hf_token,
+                       f"CPT→QLoRA→DPO adapter ({lora_count} QLoRA, {dpo_count} DPO pairs)")
         except Exception as e:
             return {"status": "error",
                     "message": f"HuggingFace upload failed: {e}",
                     "logs": all_logs}
 
+        skipped_str = f" (skipped: {', '.join(skipped)})" if skipped else ""
         return {
             "status": "ok",
             "message": (
-                f"CPT→QLoRA→DPO pipeline complete in {total_elapsed:.0f}s. "
-                f"Adapter uploaded to https://huggingface.co/{hf_repo}"
+                f"Pipeline complete in {total_elapsed:.0f}s{skipped_str}. "
+                f"Adapter at https://huggingface.co/{hf_repo}"
             ),
-            "hf_repo":           hf_repo,
-            "training_seconds":  round(total_elapsed),
-            "qlora_examples":    lora_count,
-            "dpo_pairs":         dpo_count,
-            "logs":              all_logs,
+            "hf_repo":          hf_repo,
+            "training_seconds": round(total_elapsed),
+            "qlora_examples":   lora_count,
+            "dpo_pairs":        dpo_count,
+            "skipped_stages":   skipped,
+            "logs":             all_logs,
         }
 
 
