@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir \
     mistral-common \
     peft \
     bitsandbytes \
-    transformers \
+    "transformers>=4.51.0" \
     datasets \
     accelerate \
     "trl==0.12.2" \
