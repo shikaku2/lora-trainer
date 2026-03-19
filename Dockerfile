@@ -1,5 +1,5 @@
 # much leaner, still has CUDA + PyTorch
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
 
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/runpod-volume/huggingface-cache \
@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir \
     "transformers>=4.51.0" \
     datasets \
     accelerate \
-    "trl==0.12.2" \
+    trl \
     hf_transfer
 
 COPY handler.py    /workspace/handler.py
