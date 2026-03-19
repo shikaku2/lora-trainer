@@ -116,25 +116,15 @@ def main():
     model.print_trainable_parameters()
 
     # ----------------------------------------------------------------
-    # 4. Tokenizer — use mistral_common, same as CPT/QLoRA stages
+    # 4. Tokenizer
     # ----------------------------------------------------------------
-    # AutoTokenizer has a broken regex for Mistral models; mistral_common is correct.
-    # We wrap it in a minimal HuggingFace-compatible shim so TRL can use it.
-    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
-    from transformers import PreTrainedTokenizerFast
-    mc_tok = MistralTokenizer.from_hf_hub(args.model)
-    # mistral_common exposes the underlying HuggingFace fast tokenizer
-    inner = mc_tok.instruct_tokenizer.tokenizer
-    hf_tokenizer = inner._tokenizer          # underlying tokenizers.Tokenizer
-
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=hf_tokenizer,
-        bos_token="<s>",
-        eos_token="</s>",
-        unk_token="<unk>",
-        pad_token="</s>",    # use eos as pad
-        padding_side="left", # DPO requires left-padding
-    )
+    # The unsloth/ variant patches the Mistral regex issue at model level,
+    # so AutoTokenizer is safe here. The transformers warning is a false positive.
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"   # DPO requires left-padding
 
     # ----------------------------------------------------------------
     # 5. DPO training
