@@ -48,7 +48,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/lora-trainer:latest
-          cache-from: ""
-          cache-to: ""
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/lora-trainer:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/lora-trainer:buildcache,mode=max
           provenance: false
           sbom: false
