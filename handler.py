@@ -64,11 +64,16 @@ TRAIN_DPO      = SCRIPT_DIR / "train_dpo.py"
 
 def _run(cmd, cwd=None, timeout=7200, log_prefix=""):
     log.info("%sRunning: %s", log_prefix, " ".join(str(c) for c in cmd))
+    env = os.environ.copy()
+    # Ensure CUDA_VISIBLE_DEVICES is set so the child process sees the GPU.
+    # If not already set, default to all devices (empty string = use all).
+    env.setdefault("CUDA_VISIBLE_DEVICES", os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=cwd,
+        env=env,
         text=True,
         bufsize=1,
     )
@@ -241,6 +246,7 @@ def run_training_job(event: dict) -> dict:
             skipped.append("qlora")
         else:
             log.info("=== Stage 2/3: QLoRA ===")
+            time.sleep(5)
             t0 = time.time()
             cmd = [
                 sys.executable, str(TRAIN_LORA),
@@ -288,6 +294,9 @@ def run_training_job(event: dict) -> dict:
             }
 
         log.info("=== Stage 3/3: DPO ===")
+        # Brief pause so the NVIDIA driver fully releases GPU memory from QLoRA
+        # before DPO initializes a new CUDA context in a fresh subprocess.
+        time.sleep(5)
         t0 = time.time()
         cmd = [
             sys.executable, str(TRAIN_DPO),
