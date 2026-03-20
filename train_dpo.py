@@ -31,8 +31,14 @@ def load_dpo_dataset(data_path: str):
             if not line:
                 continue
             obj = json.loads(line)
+            # Ensure prompt ends with a newline so the tokenizer sees a clean
+            # boundary between prompt and chosen/rejected — prevents BPE merging
+            # at the join point from causing TRL's mismatch warning.
+            prompt = obj["prompt"]
+            if not prompt.endswith("\n"):
+                prompt += "\n"
             records.append({
-                "prompt":   obj["prompt"],
+                "prompt":   prompt,
                 "chosen":   obj["chosen"],
                 "rejected": obj["rejected"],
             })

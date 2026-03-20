@@ -1,5 +1,5 @@
 # much leaner, still has CUDA + PyTorch
-FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-devel
+FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-devel
 
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/runpod-volume/huggingface-cache \
