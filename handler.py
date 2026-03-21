@@ -64,16 +64,11 @@ TRAIN_DPO      = SCRIPT_DIR / "train_dpo.py"
 
 def _run(cmd, cwd=None, timeout=7200, log_prefix=""):
     log.info("%sRunning: %s", log_prefix, " ".join(str(c) for c in cmd))
-    env = os.environ.copy()
-    # Ensure CUDA_VISIBLE_DEVICES is set so the child process sees the GPU.
-    # If not already set, default to all devices (empty string = use all).
-    env.setdefault("CUDA_VISIBLE_DEVICES", os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=cwd,
-        env=env,
         text=True,
         bufsize=1,
     )
