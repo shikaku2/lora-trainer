@@ -183,13 +183,15 @@ try:
 except urllib.error.HTTPError as e:
     if e.code == 401:
         print("ERROR: HF token is invalid or expired.")
+        sys.exit(1)
     elif e.code == 403:
         print("ERROR: HF token does not have write access to this repo.")
+        sys.exit(1)
     elif e.code == 404:
-        print(f"ERROR: Repo {hf_repo} not found.")
+        print(f"Repo {hf_repo} not found — will be created by the training job.")
     else:
         print(f"ERROR: HF preflight HTTP {e.code}: {e.read().decode()}")
-    sys.exit(1)
+        sys.exit(1)
 except Exception as e:
     print(f"ERROR: HF preflight failed: {e}")
     sys.exit(1)

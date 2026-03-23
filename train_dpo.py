@@ -124,10 +124,13 @@ def main():
     # ----------------------------------------------------------------
     # 4. Tokenizer
     # ----------------------------------------------------------------
-    # The unsloth/ variant patches the Mistral regex issue at model level,
-    # so AutoTokenizer is safe here. The transformers warning is a false positive.
+    # fix_mistral_regex=True corrects the broken apostrophe/quote regex that
+    # causes Mistral tokenizers to split "'The'" as ["'","T","he","'"] instead
+    # of the correct ["'The'"].  Requires transformers>=4.51.0.
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model, trust_remote_code=True, fix_mistral_regex=True
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"   # DPO requires left-padding
