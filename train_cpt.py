@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import sys
 import torch
 from pathlib import Path
 
@@ -67,6 +68,9 @@ def main():
         print("WARNING: No GPU detected — disabling 4-bit quantization")
         use_4bit = False
 
+    if not torch.cuda.is_available():
+        print("ERROR: No GPU detected — aborting to avoid wasting compute.")
+        sys.exit(1)
     print(f"PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"Device: {torch.cuda.get_device_name(0)}")

@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import sys
 import torch
 import json
 from pathlib import Path
@@ -111,6 +112,10 @@ class SimpleCollator:
 
 
 def main():
+    if not torch.cuda.is_available():
+        print("ERROR: No GPU detected — aborting to avoid wasting compute.")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="mistralai/Magistral-Small-2509")
     parser.add_argument("--data", default="alastor_train.jsonl")
