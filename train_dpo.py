@@ -10,7 +10,7 @@ JSONL format (one object per line):
 
 Usage:
     python train_dpo.py \
-        --model  unsloth/Magistral-Small-2509 \
+        --model  mistralai/Magistral-Small-2509 \
         --adapter ./lora-output \
         --data   build1/dpo_all_2026-03-19.jsonl \
         --output ./dpo-lora
@@ -33,19 +33,49 @@ def load_dpo_dataset(data_path: str):
                 continue
             obj = json.loads(line)
             # Ensure prompt ends with a newline so the tokenizer sees a clean
-            # boundary between prompt and chosen/rejected — prevents BPE merging
-            # at the join point from causing TRL's mismatch warning.
+            # boundary between prompt and chosen/rejected and avoids merge weirdness.
             prompt = obj["prompt"]
             if not prompt.endswith("\n"):
                 prompt += "\n"
             records.append({
-                "prompt":   prompt,
-                "chosen":   obj["chosen"],
+                "prompt": prompt,
+                "chosen": obj["chosen"],
                 "rejected": obj["rejected"],
             })
 
     print(f"Loaded {len(records)} DPO preference pairs")
     return Dataset.from_list(records)
+
+
+def load_dpo_tokenizer(model_path: str):
+    """
+    Magistral tokenizer behavior is flaky across transformers releases.
+    Force the slow tokenizer path first, because that's the combo that stayed
+    stable in the local sweep and it avoids the fast-tokenizer Mistral regex bug.
+    """
+    from transformers import AutoTokenizer
+
+    attempts = [
+        {"use_fast": False, "trust_remote_code": True},
+        {"use_fast": False},
+    ]
+
+    last_error = None
+    for kwargs in attempts:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_path, **kwargs)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
+            print(f"Loaded tokenizer with args: {kwargs}")
+            return tokenizer
+        except Exception as e:
+            last_error = e
+            print(f"Tokenizer load failed with args {kwargs}: {e}")
+
+    raise RuntimeError(
+        f"Failed to load tokenizer for {model_path}. Last error: {last_error}"
+    )
 
 
 def main():
@@ -62,17 +92,17 @@ def main():
     parser.add_argument("--max-seq-len",type=int,   default=2048)
     parser.add_argument("--lr",         type=float, default=5e-5)
     parser.add_argument("--beta",       type=float, default=0.1,
-                        help="DPO beta — KL divergence penalty weight")
+                        help="DPO beta - KL divergence penalty weight")
     parser.add_argument("--no-4bit",    action="store_true")
     args = parser.parse_args()
 
     use_4bit = not args.no_4bit
     if use_4bit and not torch.cuda.is_available():
-        print("WARNING: No GPU detected — disabling 4-bit quantization")
+        print("WARNING: No GPU detected - disabling 4-bit quantization")
         use_4bit = False
 
     if not torch.cuda.is_available():
-        print("ERROR: No GPU detected — aborting to avoid wasting compute.")
+        print("ERROR: No GPU detected - aborting to avoid wasting compute.")
         sys.exit(1)
     print(f"PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
@@ -121,23 +151,13 @@ def main():
     # ----------------------------------------------------------------
     # 3. Load the QLoRA adapter and make it trainable
     # ----------------------------------------------------------------
-    # is_trainable=True lets us keep adapting the same adapter weights
     model = PeftModel.from_pretrained(base, args.adapter, is_trainable=True)
     model.print_trainable_parameters()
 
     # ----------------------------------------------------------------
     # 4. Tokenizer
     # ----------------------------------------------------------------
-    # fix_mistral_regex=True corrects the broken apostrophe/quote regex that
-    # causes Mistral tokenizers to split "'The'" as ["'","T","he","'"] instead
-    # of the correct ["'The'"].  Requires transformers>=4.51.0.
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model, trust_remote_code=True, fix_mistral_regex=True
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"   # DPO requires left-padding
+    tokenizer = load_dpo_tokenizer(args.model)
 
     # ----------------------------------------------------------------
     # 5. DPO training
@@ -170,7 +190,6 @@ def main():
         max_length=args.max_seq_len,
     )
 
-    # ref_model=None + a PEFT model → TRL uses the frozen base as implicit reference
     trainer = DPOTrainer(
         model=model,
         ref_model=None,

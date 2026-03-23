@@ -117,7 +117,7 @@ def main():
         sys.exit(1)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="mistralai/Magistral-Small-2509")
+    parser.add_argument("--model", default="unsloth/Magistral-Small-2509")
     parser.add_argument("--data", default="alastor_train.jsonl")
     parser.add_argument("--output", default="./alastor-lora")
     parser.add_argument("--adapter", default=None,

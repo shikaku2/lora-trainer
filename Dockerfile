@@ -1,4 +1,4 @@
-# much leaner, still has CUDA + PyTorch
+# CUDA + PyTorch base
 FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-devel
 
 ENV PYTHONUNBUFFERED=1 \
@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir \
     mistral-common \
     peft \
     bitsandbytes \
-    "transformers>=4.51.0" \
+    "transformers==5.3.0" \
+    sentencepiece \
     datasets \
     accelerate \
     trl \
