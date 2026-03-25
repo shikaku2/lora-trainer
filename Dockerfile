@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir \
     trl \
     hf_transfer \
     protobuf \
-    unsloth \
+    "unsloth[cu128-torch270] @ git+https://github.com/unslothai/unsloth.git" \
     unsloth_zoo
 
 COPY handler.py    /workspace/handler.py

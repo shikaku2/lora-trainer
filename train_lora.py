@@ -201,7 +201,7 @@ def main():
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,  # handled by use_gradient_checkpointing="unsloth" above
         warmup_steps=10,
         learning_rate=args.lr,
         bf16=bf16_supported,
