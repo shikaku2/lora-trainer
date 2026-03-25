@@ -114,50 +114,32 @@ def main():
     dataset = load_dpo_dataset(args.data)
 
     # ----------------------------------------------------------------
-    # 2. Load base model
+    # 2. Load base model + QLoRA adapter (via Unsloth)
     # ----------------------------------------------------------------
-    from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
-    from peft import PeftModel, prepare_model_for_kbit_training
+    from unsloth import FastLanguageModel, PatchDPOTrainer
+    from peft import PeftModel
 
-    device_map = "auto" if torch.cuda.is_available() else "cpu"
+    PatchDPOTrainer()
 
-    if use_4bit:
-        bnb = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        base = AutoModelForImageTextToText.from_pretrained(
-            args.model, quantization_config=bnb,
-            device_map=device_map, trust_remote_code=True,
-        )
-    else:
-        base = AutoModelForImageTextToText.from_pretrained(
-            args.model, torch_dtype=torch.bfloat16,
-            device_map=device_map, trust_remote_code=True,
-        )
-
-    base.config.use_cache = False
-
-    # Freeze vision encoder (if any)
-    for name, param in base.named_parameters():
-        if any(k in name.lower() for k in ("vision", "patch", "pixel")):
-            param.requires_grad = False
-
-    if use_4bit:
-        base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=True)
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=args.model,
+        max_seq_length=args.max_seq_len,
+        dtype=None,        # auto-detect bf16/fp16
+        load_in_4bit=use_4bit,
+    )
 
     # ----------------------------------------------------------------
     # 3. Load the QLoRA adapter and make it trainable
     # ----------------------------------------------------------------
-    model = PeftModel.from_pretrained(base, args.adapter, is_trainable=True)
+    model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
     model.print_trainable_parameters()
 
     # ----------------------------------------------------------------
-    # 4. Tokenizer
+    # 4. Tokenizer (from Unsloth — already patched for Mistral)
     # ----------------------------------------------------------------
-    tokenizer = load_dpo_tokenizer(args.model)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 
     # ----------------------------------------------------------------
     # 5. DPO training

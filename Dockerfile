@@ -25,7 +25,9 @@ RUN pip install --no-cache-dir \
     accelerate \
     trl \
     hf_transfer \
-    protobuf
+    protobuf \
+    unsloth \
+    unsloth_zoo
 
 COPY handler.py    /workspace/handler.py
 COPY train_lora.py /workspace/train_lora.py

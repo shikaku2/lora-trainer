@@ -16,15 +16,16 @@ Required env vars:
   HF_WRITE_TOKEN        HuggingFace write token
 
 Optional env vars (with defaults):
-  CPT_FILE      plain-text CPT corpus       [cpt.txt]
-  LORA_FILE     dialogue examples (txt)     [lora.txt]
-  DPO_FILE      DPO preference pairs (jsonl)[dpo.jsonl]
-  HF_REPO       HuggingFace repo ID         [shikaku2/magistral-alastor-lora]
-  MODEL_PATH    HF repo or local path       [unsloth/Magistral-Small-2509]
-  EPOCHS_CPT    CPT epochs                  [1]
-  EPOCHS_LORA   QLoRA epochs                [3]
-  EPOCHS_DPO    DPO epochs                  [1]
-  RANK          LoRA rank                   [16]
+  CPT_FILE      plain-text CPT corpus            [cpt.txt]
+  LORA_FILE     dialogue examples (txt or jsonl) [lora.jsonl]
+  DPO_FILE      DPO preference pairs (jsonl)     [dpo.jsonl]
+  HF_REPO       HuggingFace repo ID              [shikaku2/magistral-alastor-lora]
+  MODEL_PATH    HF repo or local path            [unsloth/Magistral-Small-2509]
+  EPOCHS_CPT    CPT epochs                       [1]
+  EPOCHS_LORA   QLoRA epochs                     [3]
+  EPOCHS_DPO    DPO epochs                       [1]
+  RANK          LoRA rank                        [16]
+  MAX_SEQ_LEN   token sequence length cap        [2048]
 """
 
 import base64
@@ -99,9 +100,10 @@ api_key     = env("RUNPOD_API_KEY",     required=True)
 endpoint_id = env("RUNPOD_ENDPOINT_ID", required=True)
 hf_token    = env("HF_WRITE_TOKEN",     required=True)
 
-cpt_file    = env("CPT_FILE",   "cpt.txt")
-lora_file   = env("LORA_FILE",  "lora.txt")
-dpo_file    = env("DPO_FILE",   "dpo.jsonl")
+cpt_file    = env("CPT_FILE",      "cpt.txt")
+lora_file   = env("LORA_FILE",     "lora.jsonl")
+dpo_file    = env("DPO_FILE",      "dpo.jsonl")
+max_seq_len = int(env("MAX_SEQ_LEN", "2048"))
 hf_repo     = env("HF_REPO",    "shikaku2/magistral-alastor-lora")
 model_path  = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
 epochs_cpt   = int(env("EPOCHS_CPT",  "1"))
@@ -121,7 +123,11 @@ print(f"  CPT corpus:  {cpt_file}")
 cpt_b64 = base64.b64encode(Path(cpt_file).read_bytes()).decode()
 
 print(f"  LoRA examples: {lora_file}")
-lora_bytes = parse_lora_examples(lora_file)
+if lora_file.endswith(".jsonl"):
+    lora_bytes = Path(lora_file).read_bytes()
+    print(f"  (JSONL format — skipping parse, {sum(1 for l in lora_bytes.decode().splitlines() if l.strip())} records)")
+else:
+    lora_bytes = parse_lora_examples(lora_file)
 lora_b64   = base64.b64encode(lora_bytes).decode()
 
 print(f"  DPO pairs:   {dpo_file}")
@@ -138,6 +144,7 @@ payload = json.dumps({"input": {
     "epochs_lora":  epochs_lora,
     "epochs_dpo":   epochs_dpo,
     "rank":         rank,
+    "max_seq_len":  max_seq_len,
     "force_cpt":    force_cpt,
     "force_qlora":  force_qlora,
     "force_dpo":    force_dpo,

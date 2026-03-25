@@ -157,75 +157,34 @@ def main():
     print(f"Dataset size: {len(tokenized_dataset)} examples")
 
     # ----------------------------------------------------------------
-    # 3. Load model
+    # 3. Load model + attach LoRA adapters (via Unsloth)
     # ----------------------------------------------------------------
-    from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
+    from unsloth import FastLanguageModel
+    from peft import PeftModel
 
     print(f"\nLoading model (4-bit={use_4bit})...")
 
-    device_map = "auto" if torch.cuda.is_available() else "cpu"
-
-    if use_4bit:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForImageTextToText.from_pretrained(
-            args.model,
-            quantization_config=bnb_config,
-            device_map=device_map,
-            trust_remote_code=True,
-        )
-    else:
-        model = AutoModelForImageTextToText.from_pretrained(
-            args.model,
-            torch_dtype=torch.bfloat16,
-            device_map=device_map,
-            trust_remote_code=True,
-        )
-
-    model.config.use_cache = False
-
-    # ----------------------------------------------------------------
-    # 4. Freeze vision encoder
-    # ----------------------------------------------------------------
-    frozen = 0
-    for name, param in model.named_parameters():
-        if any(k in name.lower() for k in ("vision", "patch", "pixel")):
-            param.requires_grad = False
-            frozen += 1
-    print(f"Froze {frozen} vision encoder parameter tensors")
-
-    # ----------------------------------------------------------------
-    # 5. Attach LoRA adapters
-    # ----------------------------------------------------------------
-    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
-
-    if use_4bit:
-        model = prepare_model_for_kbit_training(
-            model,
-            use_gradient_checkpointing=True,
-        )
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name=args.model,
+        max_seq_length=args.max_seq_len,
+        dtype=None,        # auto-detect bf16/fp16
+        load_in_4bit=use_4bit,
+    )
 
     if args.adapter:
-        # Continue training an existing adapter (e.g. produced by train_cpt.py)
         print(f"Loading existing LoRA adapter from {args.adapter}")
         model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
     else:
-        lora_config = LoraConfig(
+        model = FastLanguageModel.get_peft_model(
+            model,
             r=args.rank,
             lora_alpha=args.rank * 2,
-            target_modules=[
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
-            ],
-            lora_dropout=0.05,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=0,    # must be 0 for Unsloth kernel optimisations
             bias="none",
-            task_type="CAUSAL_LM",
+            use_gradient_checkpointing="unsloth",
         )
-        model = get_peft_model(model, lora_config)
 
     model.print_trainable_parameters()
 
