@@ -179,6 +179,10 @@ def main():
     if torch.cuda.is_available():
         print(f"Device: {torch.cuda.get_device_name(0)}")
 
+    # Import unsloth after CUDA is confirmed ready, before any transformers usage
+    from unsloth import FastLanguageModel
+    from peft import PeftModel
+
     # ----------------------------------------------------------------
     # 2. Pre-tokenize dataset using mistral_common
     # ----------------------------------------------------------------
@@ -190,8 +194,6 @@ def main():
     # ----------------------------------------------------------------
     # 3. Load model + attach LoRA adapters (via Unsloth)
     # ----------------------------------------------------------------
-    from unsloth import FastLanguageModel
-    from peft import PeftModel
 
     print(f"\nLoading model (4-bit={use_4bit})...")
 

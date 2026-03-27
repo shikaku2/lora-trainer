@@ -75,6 +75,9 @@ def main():
     if torch.cuda.is_available():
         print(f"Device: {torch.cuda.get_device_name(0)}")
 
+    # Import unsloth after CUDA is confirmed ready, before any transformers usage
+    from unsloth import FastLanguageModel
+
     # ----------------------------------------------------------------
     # 1. Tokenize corpus into chunks
     # ----------------------------------------------------------------
@@ -84,7 +87,6 @@ def main():
     # ----------------------------------------------------------------
     # 2. Load model + attach fresh LoRA adapters (via Unsloth)
     # ----------------------------------------------------------------
-    from unsloth import FastLanguageModel
 
     model, _ = FastLanguageModel.from_pretrained(
         model_name=args.model,
