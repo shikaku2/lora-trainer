@@ -75,6 +75,9 @@ def main():
     if torch.cuda.is_available():
         print(f"Device: {torch.cuda.get_device_name(0)}")
 
+    from train_lora import check_model_cached
+    check_model_cached(args.model)
+
     # Import unsloth after CUDA is confirmed ready, before any transformers usage
     from unsloth import FastLanguageModel
 
@@ -93,6 +96,7 @@ def main():
         max_seq_length=args.max_seq_len,
         dtype=None,        # auto-detect bf16/fp16
         load_in_4bit=use_4bit,
+        local_files_only=True,
     )
     model = FastLanguageModel.get_peft_model(
         model,

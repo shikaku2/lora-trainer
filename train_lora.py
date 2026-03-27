@@ -36,6 +36,23 @@ class _AutoTokenizerWrapper:
         self.instruct_tokenizer = type("_IT", (), {"tokenizer": inner})()
 
 
+def check_model_cached(model_path: str) -> None:
+    """Exit early if model_path is not present in the HF cache (or as a local path)."""
+    import os
+    local = Path(model_path)
+    if local.exists():
+        return
+    hf_home = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    cache_name = "models--" + model_path.replace("/", "--")
+    snapshots_dir = hf_home / "hub" / cache_name / "snapshots"
+    if not snapshots_dir.exists() or not any(snapshots_dir.iterdir()):
+        print(f"ERROR: Model '{model_path}' not found in HF cache.")
+        print(f"  Expected: {snapshots_dir}")
+        print("  Pre-download the model to the RunPod volume before submitting a job.")
+        sys.exit(1)
+    print(f"  Model cache verified: {snapshots_dir}")
+
+
 def load_tokenizer(model_path: str):
     """
     Load a tokenizer for Mistral-family models.
@@ -58,7 +75,8 @@ def load_tokenizer(model_path: str):
     else:
         for filename in ("tekken.json", "tokenizer.model"):
             try:
-                tekken = Path(hf_hub_download(repo_id=model_path, filename=filename))
+                tekken = Path(hf_hub_download(repo_id=model_path, filename=filename,
+                                              local_files_only=True))
                 return MistralTokenizer.from_file(str(tekken))
             except Exception:
                 pass
@@ -66,7 +84,7 @@ def load_tokenizer(model_path: str):
 
     print(f"  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
     from transformers import AutoTokenizer
-    hf_tok = AutoTokenizer.from_pretrained(model_path)
+    hf_tok = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     return _AutoTokenizerWrapper(hf_tok)
 
 def pretokenize_dataset(data_path: str, model_path: str, max_seq_len: int, cache_path: str):
@@ -179,6 +197,8 @@ def main():
     if torch.cuda.is_available():
         print(f"Device: {torch.cuda.get_device_name(0)}")
 
+    check_model_cached(args.model)
+
     # Import unsloth after CUDA is confirmed ready, before any transformers usage
     from unsloth import FastLanguageModel
     from peft import PeftModel
@@ -202,6 +222,7 @@ def main():
         max_seq_length=args.max_seq_len,
         dtype=None,        # auto-detect bf16/fp16
         load_in_4bit=use_4bit,
+        local_files_only=True,
     )
 
     if args.adapter:
