@@ -285,14 +285,30 @@ while True:
 # ----------------------------------------------------------------
 print(f"\nChecking HuggingFace repo for results...")
 try:
-    hf_req = urllib.request.Request(
-        f"https://huggingface.co/api/models/{urllib.parse.quote(hf_repo, safe='/')}",
-        headers={"Authorization": f"Bearer {hf_token}"},
-        method="GET",
-    )
-    with urllib.request.urlopen(hf_req, timeout=10) as r:
-        info = json.loads(r.read())
-    files = [s["rfilename"] for s in info.get("siblings", [])]
+    from huggingface_hub import HfApi
+    api = HfApi(token=hf_token)
+
+    # Check for error log first
+    try:
+        files = list(api.list_repo_files(hf_repo, repo_type="model"))
+        if "pod_error.log" in files:
+            print("\n  !! Pod reported an error. Log:\n")
+            log_path = api.hf_hub_download(
+                repo_id=hf_repo,
+                filename="pod_error.log",
+                repo_type="model",
+                token=hf_token,
+            )
+            with open(str(log_path)) as f:
+                print(f.read())
+            # Delete the error log so it doesn't show again
+            api.delete_file("pod_error.log", repo_id=hf_repo, repo_type="model",
+                            commit_message="remove error log")
+            sys.exit(1)
+    except Exception:
+        pass
+
+    files = list(api.list_repo_files(hf_repo, repo_type="model"))
     has_adapter = any("adapter_model" in f for f in files)
     if has_adapter:
         print(f"  Adapter found at https://huggingface.co/{hf_repo}")
@@ -301,5 +317,7 @@ try:
         print(f"  No adapter found in {hf_repo} — training may have failed.")
         print(f"  Check pod logs at https://www.runpod.io/console/pods/{pod_id}")
         sys.exit(1)
+except SystemExit:
+    raise
 except Exception as e:
     print(f"  Could not check HF repo: {e}")

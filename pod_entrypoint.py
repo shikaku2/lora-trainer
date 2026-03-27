@@ -76,6 +76,24 @@ def terminate_pod() -> None:
         log.error("Failed to terminate pod: %s", e)
 
 
+def upload_error_log(repo: str, token: str, text: str) -> None:
+    try:
+        from huggingface_hub import HfApi
+        import io
+        api = HfApi(token=token)
+        api.create_repo(repo, repo_type="model", exist_ok=True, private=True)
+        api.upload_file(
+            path_or_fileobj=io.BytesIO(text.encode()),
+            path_in_repo="pod_error.log",
+            repo_id=repo,
+            repo_type="model",
+            commit_message="pod error log",
+        )
+        log.info("Error log uploaded to %s/pod_error.log", repo)
+    except Exception as e:
+        log.warning("Could not upload error log: %s", e)
+
+
 def main() -> None:
     hf_token    = os.environ["HF_WRITE_TOKEN"]
     hf_repo     = os.environ["HF_REPO"]
@@ -129,8 +147,18 @@ def main() -> None:
 if __name__ == "__main__":
     data_repo = os.environ.get("TRAINING_DATA_REPO", "")
     hf_token  = os.environ.get("HF_WRITE_TOKEN", "")
+    hf_repo   = os.environ.get("HF_REPO", "")
+    success   = False
     try:
         main()
+        success = True
+    except Exception as e:
+        import traceback
+        err_text = traceback.format_exc()
+        log.error("Pod failed with exception:\n%s", err_text)
+        if hf_repo and hf_token:
+            upload_error_log(hf_repo, hf_token, err_text)
+        sys.exit(1)
     finally:
         if data_repo and hf_token:
             delete_training_data_repo(data_repo, hf_token)
