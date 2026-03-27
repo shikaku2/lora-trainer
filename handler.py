@@ -134,9 +134,9 @@ def _hf_upload(local_dir: Path, repo_id: str, token: str, commit_message: str):
 
 
 def run_training_job(event: dict) -> dict:
-    # ----------------------------------------------------------------
+    # ---------------------------------------------------------------
     # Validate required inputs
-    # ----------------------------------------------------------------
+    # ---------------------------------------------------------------
     for field in ("cpt_b64", "lora_b64", "dpo_b64", "hf_token", "hf_repo"):
         if not event.get(field):
             return {"status": "error", "message": f"Missing required field: {field}"}
