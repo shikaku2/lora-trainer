@@ -10,7 +10,6 @@ Usage:
         --data build1/Alastor_CPT_Master.txt --output ./cpt-lora
 """
 
-import unsloth  # must be first to patch transformers before any other import
 import argparse
 import sys
 import torch

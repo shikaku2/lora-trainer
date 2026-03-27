@@ -16,7 +16,6 @@ Usage:
         --output ./dpo-lora
 """
 
-import unsloth  # must be first to patch transformers before any other import
 import argparse
 import json
 import sys

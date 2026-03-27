@@ -8,7 +8,6 @@ Usage:
     python train_lora.py --model ~/models/magistral-small-2509-bf16 --data alastor_train.jsonl
 """
 
-import unsloth  # must be first to patch transformers before any other import
 import argparse
 import sys
 import torch
