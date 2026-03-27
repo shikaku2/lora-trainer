@@ -17,7 +17,7 @@ Required env vars:
 
 Optional env vars (with defaults):
   CPT_FILE      plain-text CPT corpus            [cpt.txt]
-  LORA_FILE     dialogue examples (txt or jsonl) [lora.jsonl]
+  LORA_FILE     dialogue examples (txt or jsonl) [lora.txt]
   DPO_FILE      DPO preference pairs (jsonl)     [dpo.jsonl]
   HF_REPO       HuggingFace repo ID              [shikaku2/magistral-alastor-lora]
   MODEL_PATH    HF repo or local path            [unsloth/Magistral-Small-2509]
@@ -49,26 +49,38 @@ def env(key, default=None, required=False):
 
 def parse_lora_examples(text_path: str) -> bytes:
     """
-    Parse New_LoRA_Examples.txt format into JSONL bytes.
+    Parse lora.txt format into JSONL bytes.
 
-    Each block looks like:
+    File format:
+        SYSTEM:
+        <system prompt>
+        =====
+
         EXAMPLE N:
-        USER: single-line user message
+        USER: user message
         REPLY: possibly
                multi-line reply
-        ---
+        =====
 
-    Output: one {"text": "[INST] USER [/INST] REPLY"} JSON object per line.
+    If a SYSTEM block is present it is injected into every [INST] block.
+    Output: one {"text": "[INST] SYSTEM\\n\\nUSER [/INST] REPLY"} per line.
     """
     text = Path(text_path).read_text()
-    blocks = re.split(r"\n---+\n?", text)
+    blocks = re.split(r"\n=====\n?", text)
 
+    system_prompt = ""
     lines = []
     for block in blocks:
         block = block.strip()
         if not block:
             continue
-        # Accept "EXAMPLE N:", "EXAMPLES N:" (typo), or blocks starting directly with USER:
+
+        # Extract optional system prompt from SYSTEM: block
+        if block.startswith("SYSTEM:"):
+            system_prompt = block[len("SYSTEM:"):].strip()
+            continue
+
+        # Accept "EXAMPLE N:", "EXAMPLES N:" (typo), or blocks starting with USER:
         if not re.match(r"EXAMPLES?\s+\d+", block) and not block.startswith("USER:"):
             continue
 
@@ -82,14 +94,16 @@ def parse_lora_examples(text_path: str) -> bytes:
 
         user  = user_m.group(1).strip()
         reply = reply_m.group(1).strip()
-        text_val = f"[INST] {user} [/INST] {reply}"
+        inst  = f"{system_prompt}\n\n{user}" if system_prompt else user
+        text_val = f"[INST] {inst} [/INST] {reply}"
         lines.append(json.dumps({"text": text_val}))
 
     if not lines:
         print(f"ERROR: No examples parsed from {text_path}")
         sys.exit(1)
 
-    print(f"  Parsed {len(lines)} QLoRA examples from {Path(text_path).name}")
+    sys_info = f" (with system prompt, ~{len(system_prompt)//4} tokens)" if system_prompt else ""
+    print(f"  Parsed {len(lines)} QLoRA examples from {Path(text_path).name}{sys_info}")
     return ("\n".join(lines) + "\n").encode()
 
 
@@ -101,7 +115,7 @@ endpoint_id = env("RUNPOD_ENDPOINT_ID", required=True)
 hf_token    = env("HF_WRITE_TOKEN",     required=True)
 
 cpt_file    = env("CPT_FILE",      "cpt.txt")
-lora_file   = env("LORA_FILE",     "lora.jsonl")
+lora_file   = env("LORA_FILE",     "lora.txt")
 dpo_file    = env("DPO_FILE",      "dpo.jsonl")
 max_seq_len = int(env("MAX_SEQ_LEN", "2048"))
 hf_repo     = env("HF_REPO",    "shikaku2/magistral-alastor-lora")

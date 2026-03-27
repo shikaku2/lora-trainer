@@ -14,29 +14,60 @@ import torch
 import json
 from pathlib import Path
 
+class _AutoTokenizerWrapper:
+    """
+    Wraps AutoTokenizer to expose the same .instruct_tokenizer.tokenizer.encode(text, bos, eos)
+    interface as MistralTokenizer, so callers don't need to branch.
+    """
+    class _Inner:
+        def __init__(self, hf_tok):
+            self._tok = hf_tok
+
+        def encode(self, text: str, bos: bool = True, eos: bool = True):
+            ids = self._tok.encode(text, add_special_tokens=False)
+            if bos and self._tok.bos_token_id is not None:
+                ids = [self._tok.bos_token_id] + ids
+            if eos and self._tok.eos_token_id is not None:
+                ids = ids + [self._tok.eos_token_id]
+            return ids
+
+    def __init__(self, hf_tok):
+        inner = self._Inner(hf_tok)
+        self.instruct_tokenizer = type("_IT", (), {"tokenizer": inner})()
+
+
 def load_tokenizer(model_path: str):
     """
-    Use mistral_common for correct tokenization.
-    AutoTokenizer has a broken regex for Mistral models.
+    Load a tokenizer for Mistral-family models.
+    Tries mistral_common (tekken.json / tokenizer.model) first — official Mistral models
+    need this because AutoTokenizer has a broken regex.
+    Falls back to AutoTokenizer for merged/derived models that only ship tokenizer.json.
     Handles both local paths and HF repo IDs.
     """
     from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    from huggingface_hub import hf_hub_download
 
     local = Path(model_path)
     if local.exists():
-        # Local path — look for tekken.json directly
         tekken = local / "tekken.json"
+        if not tekken.exists():
+            tekken = local / "tokenizer.model"
+        if tekken.exists():
+            return MistralTokenizer.from_file(str(tekken))
+        # fall through to AutoTokenizer
     else:
-        # HF repo ID — download just the tokenizer file
-        from huggingface_hub import hf_hub_download
-        # Try tekken.json first (official Mistral), fall back to tokenizer.model
-        try:
-            tekken = Path(hf_hub_download(repo_id=model_path, filename="tekken.json"))
-        except Exception:
-            tekken = Path(hf_hub_download(repo_id=model_path, filename="tokenizer.model"))
+        for filename in ("tekken.json", "tokenizer.model"):
+            try:
+                tekken = Path(hf_hub_download(repo_id=model_path, filename=filename))
+                return MistralTokenizer.from_file(str(tekken))
+            except Exception:
+                pass
+        # fall through to AutoTokenizer
 
-    tok = MistralTokenizer.from_file(str(tekken))
-    return tok
+    print(f"  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
+    from transformers import AutoTokenizer
+    hf_tok = AutoTokenizer.from_pretrained(model_path)
+    return _AutoTokenizerWrapper(hf_tok)
 
 def pretokenize_dataset(data_path: str, model_path: str, max_seq_len: int, cache_path: str):
     """
