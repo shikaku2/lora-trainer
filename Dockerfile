@@ -28,7 +28,8 @@ RUN pip install --no-cache-dir \
     hf_transfer \
     protobuf \
     "unsloth[cu128-torch270] @ git+https://github.com/unslothai/unsloth.git" \
-    unsloth_zoo
+    unsloth_zoo && \
+    pip uninstall -y xformers || true
 
 COPY handler.py    /workspace/handler.py
 COPY train_lora.py /workspace/train_lora.py
