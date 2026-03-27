@@ -223,6 +223,7 @@ def main():
         dtype=None,        # auto-detect bf16/fp16
         load_in_4bit=use_4bit,
         local_files_only=True,
+        attn_implementation="sdpa",
     )
 
     if args.adapter:
