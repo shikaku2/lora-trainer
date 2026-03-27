@@ -19,8 +19,7 @@ Optional env vars (with defaults):
   HF_REPO         HuggingFace repo for final adapter  [shikaku2/magistral-alastor-lora]
   MODEL_PATH      base model HF repo or local path [unsloth/Magistral-Small-2509]
   DOCKER_IMAGE    pod container image              [ghcr.io/shikaku2/lora-trainer:latest]
-  GPU_TYPE        RunPod GPU type ID               [NVIDIA L40S]
-  VOLUME_ID       RunPod network volume ID         [] (no volume = no model cache)
+  GPU_TYPE        RunPod GPU type ID               [NVIDIA A40]
   EPOCHS_CPT      CPT epochs                       [1]
   EPOCHS_LORA     QLoRA epochs                     [3]
   EPOCHS_DPO      DPO epochs                       [1]
@@ -119,8 +118,7 @@ dpo_file     = env("DPO_FILE",   "dpo.jsonl")
 hf_repo      = env("HF_REPO",   "shikaku2/magistral-alastor-lora")
 model_path   = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
 docker_image = env("DOCKER_IMAGE", "ghcr.io/shikaku2/lora-trainer:latest")
-gpu_type     = env("GPU_TYPE",   "NVIDIA L40S")
-volume_id    = env("VOLUME_ID",  "")
+gpu_type     = env("GPU_TYPE",   "NVIDIA A40")
 max_seq_len  = int(env("MAX_SEQ_LEN",  "2048"))
 epochs_cpt   = int(env("EPOCHS_CPT",   "1"))
 epochs_lora  = int(env("EPOCHS_LORA",  "3"))
@@ -229,29 +227,20 @@ try:
         "FORCE_CPT":          "1" if force_cpt  else "0",
         "FORCE_QLORA":        "1" if force_qlora else "0",
         "FORCE_DPO":          "1" if force_dpo   else "0",
-        # HF cache config (mirrors Dockerfile)
-        "HF_HOME":                  "/runpod-volume/huggingface-cache",
-        "TRANSFORMERS_CACHE":       "/runpod-volume/huggingface-cache/hub",
-        "HUGGINGFACE_HUB_CACHE":    "/runpod-volume/huggingface-cache/hub",
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
     }
 
-    create_kwargs = dict(
+    pod = runpod.create_pod(
         name=f"lora-training-{int(time.time())}",
         image_name=docker_image,
         gpu_type_id=gpu_type,
         cloud_type="SECURE",
         gpu_count=1,
-        container_disk_in_gb=50,
-        volume_mount_path="/runpod-volume",
+        container_disk_in_gb=100,  # ephemeral: model (~47GB) + adapters + workspace
         env=pod_env,
         ports=None,
         support_public_ip=False,
     )
-    if volume_id:
-        create_kwargs["network_volume_id"] = volume_id
-
-    pod = runpod.create_pod(**create_kwargs)
     pod_id = pod["id"]
     print(f"  Pod created: {pod_id}")
     print(f"  Dashboard:   https://www.runpod.io/console/pods/{pod_id}")

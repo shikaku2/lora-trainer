@@ -31,6 +31,14 @@ logging.basicConfig(
 log = logging.getLogger("pod")
 
 
+def download_model(model_path: str, token: str) -> None:
+    """Download the base model into the HF cache so check_model_cached() passes."""
+    from huggingface_hub import snapshot_download
+    log.info("Downloading base model %s (this may take a while)...", model_path)
+    snapshot_download(repo_id=model_path, token=token)
+    log.info("Model download complete.")
+
+
 def download_training_data(repo: str, token: str, dest: Path) -> None:
     from huggingface_hub import snapshot_download
     log.info("Downloading training data from %s ...", repo)
@@ -81,6 +89,8 @@ def main() -> None:
     force_cpt   = os.environ.get("FORCE_CPT",   "0") == "1"
     force_qlora = os.environ.get("FORCE_QLORA", "0") == "1"
     force_dpo   = os.environ.get("FORCE_DPO",   "0") == "1"
+
+    download_model(model_path, hf_token)
 
     with tempfile.TemporaryDirectory(prefix="lora_pod_") as workdir:
         data_dir = Path(workdir) / "training-data"
