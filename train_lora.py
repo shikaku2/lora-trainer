@@ -2,12 +2,13 @@
 """
 QLoRA fine-tune of Magistral-Small-2509 on Alastor character examples.
 Uses mistral_common for correct tokenization + HuggingFace + PEFT for training.
-Works on ROCm (AMD) and CUDA. No Unsloth, no xformers required.
+Uses Unsloth for faster training and reduced VRAM usage.
 
 Usage:
     python train_lora.py --model ~/models/magistral-small-2509-bf16 --data alastor_train.jsonl
 """
 
+import unsloth  # must be first to patch transformers before any other import
 import argparse
 import sys
 import torch
