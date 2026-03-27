@@ -31,9 +31,10 @@ RUN pip install --no-cache-dir \
     unsloth_zoo && \
     pip uninstall -y xformers || true
 
-COPY handler.py    /workspace/handler.py
-COPY train_lora.py /workspace/train_lora.py
-COPY train_cpt.py  /workspace/train_cpt.py
-COPY train_dpo.py  /workspace/train_dpo.py
+COPY handler.py         /workspace/handler.py
+COPY pod_entrypoint.py  /workspace/pod_entrypoint.py
+COPY train_lora.py      /workspace/train_lora.py
+COPY train_cpt.py       /workspace/train_cpt.py
+COPY train_dpo.py       /workspace/train_dpo.py
 
-CMD ["python3", "-u", "handler.py"]
+CMD ["python3", "-u", "pod_entrypoint.py"]
