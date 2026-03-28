@@ -86,6 +86,7 @@ def load_tokenizer(model_path: str, token: str = None):
     print(f"  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
     from transformers import AutoTokenizer
     hf_tok = AutoTokenizer.from_pretrained(model_path, local_files_only=True,
+                                           trust_remote_code=True,
                                            token=token or os.environ.get("HF_WRITE_TOKEN"))
     return _AutoTokenizerWrapper(hf_tok)
 

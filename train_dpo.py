@@ -59,6 +59,7 @@ def load_dpo_tokenizer(model_path: str):
 
     attempts = [
         {"use_fast": False, "trust_remote_code": True},
+        {"use_fast": True,  "trust_remote_code": True},
         {"use_fast": False},
     ]
 
