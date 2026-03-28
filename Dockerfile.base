@@ -23,7 +23,6 @@ RUN pip install --no-cache-dir \
     mistral-common \
     peft \
     bitsandbytes \
-    "transformers==5.3.0" \
     sentencepiece \
     datasets \
     accelerate \
