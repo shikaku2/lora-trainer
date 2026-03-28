@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)  # unsloth device_map conflicts with this env var
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 import sys
 import torch
 from pathlib import Path
