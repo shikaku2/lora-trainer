@@ -42,6 +42,39 @@ import urllib.request
 from pathlib import Path
 
 
+def estimate_disk_gb(model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank):
+    """
+    Estimate pod disk usage and return (model_gb, adapters_gb, data_gb, total_gb).
+
+    Model size: actual weight file sizes queried from the HF Hub.
+    Adapters:   ~0.4% of model bf16 weight size per stage, scaled by rank/16.
+                (Derived from: 7 target modules × all layers × 2×rank×hidden at bf16.)
+    Data caches: 2× the raw file sizes (Arrow tokenized datasets).
+    Overhead:   3 GB fixed (OS, unsloth compiled cache, temp files).
+    """
+    from huggingface_hub import HfApi
+
+    model_gb = 0.0
+    if not Path(model_path).exists():  # skip local paths
+        try:
+            info = HfApi(token=hf_token).model_info(model_path, files_metadata=True)
+            model_gb = sum(
+                f.size for f in info.siblings
+                if f.size and f.rfilename.endswith((".safetensors", ".bin"))
+            ) / 1e9
+        except Exception:
+            pass  # non-critical; disk allocation falls back to minimum
+
+    adapter_gb_each = model_gb * (rank / 16) * 0.004  # ~0.4% of bf16 weight size
+    adapters_gb = adapter_gb_each * 3                  # CPT + QLoRA + DPO
+
+    data_gb = (len(cpt_bytes) + len(lora_bytes) + len(dpo_bytes)) * 2 / 1e9
+
+    overhead_gb = 3.0
+    total_gb = model_gb + adapters_gb + data_gb + overhead_gb
+    return model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb
+
+
 def env(key, default=None, required=False):
     val = os.environ.get(key, default)
     if required and not val:
@@ -179,6 +212,24 @@ print(f"  DPO pairs:     {dpo_file}")
 dpo_bytes = Path(dpo_file).read_bytes()
 
 # ----------------------------------------------------------------
+# Disk estimate
+# ----------------------------------------------------------------
+print("\nEstimating disk requirements...")
+model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb = estimate_disk_gb(
+    model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank,
+)
+container_disk_gb = max(30, int(total_gb * 1.25) + 5)
+if model_gb:
+    print(f"  Model weights:  {model_gb:.1f} GB")
+else:
+    print(f"  Model weights:  unknown (local path or HF query failed)")
+print(f"  LoRA adapters:  {adapters_gb:.2f} GB  (3 stages × {adapter_gb_each:.2f} GB, rank {rank})")
+print(f"  Dataset caches: {data_gb * 1000:.1f} MB")
+print(f"  Overhead:       3.0 GB")
+print(f"  ──────────────────────────────────────────")
+print(f"  Estimated total {total_gb:.1f} GB  →  allocating {container_disk_gb} GB (25% buffer)")
+
+# ----------------------------------------------------------------
 # Upload training files to temporary HF repo
 # ----------------------------------------------------------------
 print(f"\nUploading training data to {training_data_repo}...")
@@ -237,7 +288,7 @@ try:
         gpu_type_id=gpu_type,
         cloud_type="SECURE",
         gpu_count=1,
-        container_disk_in_gb=100,  # ephemeral: model (~47GB) + adapters + workspace
+        container_disk_in_gb=container_disk_gb,
         env=pod_env,
         ports=None,
         support_public_ip=False,
