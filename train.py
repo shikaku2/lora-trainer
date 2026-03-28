@@ -13,6 +13,8 @@ import json
 import os
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)  # unsloth device_map conflicts with this env var
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+# Import unsloth before anything that might pull in transformers/peft
+from unsloth import FastLanguageModel, PatchDPOTrainer
 import sys
 import torch
 from pathlib import Path
@@ -108,7 +110,7 @@ def load_dpo_tokenizer(model_path: str):
             tok = AutoTokenizer.from_pretrained(model_path, local_files_only=True, **kwargs)
             if tok.pad_token is None:
                 tok.pad_token = tok.eos_token
-            tok.padding_side = "left"
+            tok.padding_side = "right"  # unsloth assumes right-padding in its embedding mask
             print(f"  Loaded tokenizer with {kwargs}")
             return tok
         except Exception as e:
@@ -140,7 +142,6 @@ class SimpleCollator:
 
 
 def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
-    from unsloth import FastLanguageModel
     import transformers.modeling_utils as _mu
     if hasattr(_mu, "caching_allocator_warmup"):
         _mu.caching_allocator_warmup = lambda *a, **kw: None
@@ -168,7 +169,6 @@ def gpu_check():
 
 
 def apply_lora(model, rank: int):
-    from unsloth import FastLanguageModel
     return FastLanguageModel.get_peft_model(
         model,
         r=rank,
@@ -377,13 +377,17 @@ def cmd_dpo(args):
         dataset.save_to_disk(cache_path)
         print(f"Loaded {len(dataset)} DPO preference pairs")
 
-    from unsloth import PatchDPOTrainer
     PatchDPOTrainer()
 
-    from peft import PeftModel
-    model = load_model(args.model, use_4bit, args.max_seq_len)
-    model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
-    model.enable_input_require_grads()
+    # Load base model + existing adapter via unsloth so its patches stay intact
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name=args.adapter,
+        max_seq_length=args.max_seq_len,
+        dtype=None,
+        load_in_4bit=use_4bit,
+        device_map={"": 0},
+    )
+    FastLanguageModel.for_training(model)
     model.print_trainable_parameters()
 
     tokenizer = load_dpo_tokenizer(args.model)
@@ -397,6 +401,7 @@ def cmd_dpo(args):
         cls=DPOConfig,
         beta=args.beta,
         max_length=args.max_seq_len,
+        max_prompt_length=args.max_seq_len // 2,
     )
     trainer = DPOTrainer(
         model=model,
