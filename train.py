@@ -145,11 +145,17 @@ def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
     if hasattr(_mu, "caching_allocator_warmup"):
         _mu.caching_allocator_warmup = lambda *a, **kw: None
     print(f"\nLoading model (4-bit={use_4bit})...")
+    print(f"  CUDA available: {torch.cuda.is_available()}")
+    print(f"  CUDA device count: {torch.cuda.device_count()}")
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+        print(f"  CUDA device 0: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA device 0 memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     model, _ = FastLanguageModel.from_pretrained(
         model_name=model_path,
         max_seq_length=max_seq_len,
         dtype=None,
         load_in_4bit=use_4bit,
+        device_map={"": 0},  # force all layers onto cuda:0
     )
     return model
 
