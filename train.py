@@ -15,21 +15,6 @@ import os
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 from unsloth import FastLanguageModel, PatchDPOTrainer
-# Unsloth's compiled trainer sets model._has_no_labels=True when DPO omits labels,
-# then LlamaModel_fast_forward (bound as MistralModel.forward) multiplies inputs_embeds
-# by the attention mask. Mistral GQA passes a 4D causal mask (batch,1,seq,seq); after
-# unsqueeze/transpose it becomes 5D and fails to broadcast against 3D embeddings.
-# Patch MistralModel.forward at the class level so _has_no_labels is cleared before
-# the check runs on every call — this is one level BELOW MistralForCausalLM.
-try:
-    from transformers.models.mistral.modeling_mistral import MistralModel as _MistralModel
-    _orig_mistral_model_fwd = _MistralModel.forward
-    def _mistral_model_fwd_patched(self, *args, **kwargs):
-        self._has_no_labels = False
-        return _orig_mistral_model_fwd(self, *args, **kwargs)
-    _MistralModel.forward = _mistral_model_fwd_patched
-except Exception as _e:
-    print(f"Warning: MistralModel.forward patch failed: {_e}")
 import sys
 import torch
 from pathlib import Path
@@ -403,6 +388,18 @@ def cmd_dpo(args):
         device_map={"": 0},
     )
     FastLanguageModel.for_training(model)
+
+    # Unsloth sets forward as an INSTANCE attribute on the MistralModel object, so
+    # class-level patches are shadowed. Patch the instance directly.
+    # model → PeftModel → .base_model (LoraModel) → .model (MistralForCausalLM) → .model (MistralModel)
+    _mistral_model = model.base_model.model.model
+    _orig_mistral_fwd = _mistral_model.forward
+    def _safe_mistral_fwd(*args, **kwargs):
+        _mistral_model._has_no_labels = False
+        return _orig_mistral_fwd(*args, **kwargs)
+    _mistral_model.forward = _safe_mistral_fwd
+    print(f"  Patched {type(_mistral_model).__name__} instance forward (disable _has_no_labels)")
+
     model.print_trainable_parameters()
 
     tokenizer = load_dpo_tokenizer(args.model)
