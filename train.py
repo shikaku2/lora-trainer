@@ -64,12 +64,21 @@ def load_tokenizer(model_path: str, token: str = None):
 
     print("  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
     from transformers import AutoTokenizer
-    hf_tok = AutoTokenizer.from_pretrained(
-        model_path,
-        local_files_only=True,
-        trust_remote_code=True,
-        token=token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN"),
-    )
+    _tok_token = token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
+    for _use_fast in (False, True):
+        try:
+            hf_tok = AutoTokenizer.from_pretrained(
+                model_path,
+                local_files_only=True,
+                trust_remote_code=True,
+                use_fast=_use_fast,
+                token=_tok_token,
+            )
+            break
+        except Exception as e:
+            if _use_fast:
+                raise
+            print(f"  Slow tokenizer failed ({e}), trying fast tokenizer")
 
     def encode(text: str, bos: bool = True, eos: bool = True):
         ids = hf_tok.encode(text, add_special_tokens=False)
