@@ -63,22 +63,24 @@ def load_tokenizer(model_path: str, token: str = None):
                 pass
 
     print("  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast
     _tok_token = token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
-    for _use_fast in (False, True):
+    _tok_kwargs = dict(local_files_only=True, token=_tok_token)
+    hf_tok = None
+    for _attempt, _kwargs in [
+        ("AutoTokenizer slow",           dict(**_tok_kwargs, trust_remote_code=True, use_fast=False)),
+        ("AutoTokenizer fast",           dict(**_tok_kwargs, trust_remote_code=True, use_fast=True)),
+        ("PreTrainedTokenizerFast",      _tok_kwargs),
+    ]:
         try:
-            hf_tok = AutoTokenizer.from_pretrained(
-                model_path,
-                local_files_only=True,
-                trust_remote_code=True,
-                use_fast=_use_fast,
-                token=_tok_token,
-            )
+            cls = PreTrainedTokenizerFast if "PreTrainedTokenizerFast" in _attempt else AutoTokenizer
+            hf_tok = cls.from_pretrained(model_path, **_kwargs)
+            print(f"  Loaded tokenizer via {_attempt}")
             break
         except Exception as e:
-            if _use_fast:
-                raise
-            print(f"  Slow tokenizer failed ({e}), trying fast tokenizer")
+            print(f"  {_attempt} failed: {e}")
+    if hf_tok is None:
+        raise RuntimeError(f"Could not load any tokenizer for {model_path}")
 
     def encode(text: str, bos: bool = True, eos: bool = True):
         ids = hf_tok.encode(text, add_special_tokens=False)
