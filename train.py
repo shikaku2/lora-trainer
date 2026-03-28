@@ -15,6 +15,20 @@ os.environ.pop("CUDA_VISIBLE_DEVICES", None)  # unsloth device_map conflicts wit
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 # Import unsloth before anything that might pull in transformers/peft
 from unsloth import FastLanguageModel, PatchDPOTrainer
+# Unsloth's compiled training step sets model._has_no_labels=True when labels are absent
+# (i.e. DPO). The _has_no_labels path multiplies inputs_embeds by the attention_mask, but
+# Mistral GQA passes a 4D causal mask (batch,1,seq,seq); after unsqueeze/transpose that
+# becomes 5D and fails to broadcast against 3D embeddings at "non-singleton dimension 4".
+# Fix: wrap MistralModel.forward so _has_no_labels is always False going into the body.
+try:
+    from transformers.models.mistral.modeling_mistral import MistralModel as _MM
+    _mm_fwd = _MM.forward
+    def _mm_fwd_patched(self, *args, **kwargs):
+        self._has_no_labels = False
+        return _mm_fwd(self, *args, **kwargs)
+    _MM.forward = _mm_fwd_patched
+except Exception as _e:
+    print(f"Warning: MistralModel.forward patch failed: {_e}")
 import sys
 import torch
 from pathlib import Path
@@ -388,12 +402,6 @@ def cmd_dpo(args):
         device_map={"": 0},
     )
     FastLanguageModel.for_training(model)
-    # DPO passes a 4D causal mask; unsloth's _has_no_labels path assumes 2D and
-    # crashes when it tries to broadcast (batch,1,seq,seq) against (batch,seq,hidden).
-    # Disabling the flag skips that embedding-masking shortcut entirely.
-    for _m in model.modules():
-        if hasattr(_m, "_has_no_labels"):
-            _m._has_no_labels = False
     model.print_trainable_parameters()
 
     tokenizer = load_dpo_tokenizer(args.model)
