@@ -147,31 +147,33 @@ def main() -> None:
         from handler import run_training_job
         result = run_training_job(event)
 
-    if result.get("status") == "ok":
-        log.info("Pipeline complete: %s", result.get("message"))
-    else:
-        log.error("Pipeline failed [%s]: %s", result.get("stage"), result.get("message"))
-        for line in (result.get("logs") or [])[-30:]:
-            log.error("  %s", line)
-        sys.exit(1)
+    return result
 
 
 if __name__ == "__main__":
     data_repo = os.environ.get("TRAINING_DATA_REPO", "")
     hf_token  = os.environ.get("HF_WRITE_TOKEN", "")
     hf_repo   = os.environ.get("HF_REPO", "")
-    success   = False
+    exit_code = 1
     try:
-        main()
-        success = True
-    except Exception as e:
+        result = main()
+        if result.get("status") == "ok":
+            log.info("Pipeline complete: %s", result.get("message"))
+            exit_code = 0
+        else:
+            stage = result.get("stage", "unknown")
+            msg   = result.get("message", "unknown error")
+            lines = result.get("logs") or []
+            log.error("Pipeline failed [%s]: %s", stage, msg)
+            err_text = f"Stage: {stage}\nError: {msg}\n\nLast logs:\n" + "\n".join(lines[-200:])
+            upload_error_log(hf_repo, hf_token, err_text)
+    except Exception:
         import traceback
         err_text = traceback.format_exc()
         log.error("Pod failed with exception:\n%s", err_text)
-        if hf_repo and hf_token:
-            upload_error_log(hf_repo, hf_token, err_text)
-        sys.exit(1)
+        upload_error_log(hf_repo, hf_token, err_text)
     finally:
         if data_repo and hf_token:
             delete_training_data_repo(data_repo, hf_token)
         terminate_pod()
+    sys.exit(exit_code)
