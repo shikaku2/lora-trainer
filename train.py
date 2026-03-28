@@ -137,23 +137,17 @@ class SimpleCollator:
         }
 
 
-def load_model(model_path: str, use_4bit: bool):
-    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    ) if use_4bit else None
+def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
+    from unsloth import FastLanguageModel
     print(f"\nLoading model (4-bit={use_4bit})...")
-    return AutoModelForCausalLM.from_pretrained(
-        model_path,
-        quantization_config=bnb_config,
-        torch_dtype=torch.bfloat16,
-        device_map={"": 0},
+    model, _ = FastLanguageModel.from_pretrained(
+        model_name=model_path,
+        max_seq_length=max_seq_len,
+        dtype=None,
+        load_in_4bit=use_4bit,
         local_files_only=True,
-        attn_implementation="sdpa",
     )
+    return model
 
 
 def gpu_check():
@@ -163,16 +157,17 @@ def gpu_check():
     print(f"PyTorch: {torch.__version__}  Device: {torch.cuda.get_device_name(0)}")
 
 
-def make_lora_config(rank):
-    from peft import LoraConfig, TaskType
-    return LoraConfig(
+def apply_lora(model, rank: int):
+    from unsloth import FastLanguageModel
+    return FastLanguageModel.get_peft_model(
+        model,
         r=rank,
         lora_alpha=rank * 2,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
         lora_dropout=0,
         bias="none",
-        task_type=TaskType.CAUSAL_LM,
+        use_gradient_checkpointing="unsloth",
     )
 
 
@@ -185,7 +180,7 @@ def make_training_args(output, epochs, batch_size, grad_accum, lr, bf16, fp16,
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=grad_accum,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,
         warmup_steps=warmup_steps,
         learning_rate=lr,
         bf16=bf16,
@@ -240,9 +235,8 @@ def cmd_cpt(args):
 
     print(f"CPT dataset: {len(dataset)} chunks")
 
-    from peft import get_peft_model
-    model = load_model(args.model, use_4bit)
-    model = get_peft_model(model, make_lora_config(args.rank))
+    model = load_model(args.model, use_4bit, args.max_seq_len)
+    model = apply_lora(model, args.rank)
     model.enable_input_require_grads()
     model.print_trainable_parameters()
 
@@ -308,14 +302,14 @@ def cmd_qlora(args):
 
     print(f"Dataset size: {len(dataset)} examples")
 
-    from peft import PeftModel, get_peft_model
-    model = load_model(args.model, use_4bit)
+    from peft import PeftModel
+    model = load_model(args.model, use_4bit, args.max_seq_len)
 
     if args.adapter:
         print(f"Loading existing LoRA adapter from {args.adapter}")
         model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
     else:
-        model = get_peft_model(model, make_lora_config(args.rank))
+        model = apply_lora(model, args.rank)
 
     model.enable_input_require_grads()
     model.print_trainable_parameters()
@@ -375,8 +369,11 @@ def cmd_dpo(args):
         dataset.save_to_disk(cache_path)
         print(f"Loaded {len(dataset)} DPO preference pairs")
 
+    from unsloth import PatchDPOTrainer
+    PatchDPOTrainer()
+
     from peft import PeftModel
-    model = load_model(args.model, use_4bit)
+    model = load_model(args.model, use_4bit, args.max_seq_len)
     model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
     model.enable_input_require_grads()
     model.print_trainable_parameters()
