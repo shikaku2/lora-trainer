@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import torch
 import json
@@ -53,7 +54,7 @@ def check_model_cached(model_path: str) -> None:
     print(f"  Model cache verified: {snapshots_dir}")
 
 
-def load_tokenizer(model_path: str):
+def load_tokenizer(model_path: str, token: str = None):
     """
     Load a tokenizer for Mistral-family models.
     Tries mistral_common (tekken.json / tokenizer.model) first — official Mistral models
@@ -84,7 +85,8 @@ def load_tokenizer(model_path: str):
 
     print(f"  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
     from transformers import AutoTokenizer
-    hf_tok = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+    hf_tok = AutoTokenizer.from_pretrained(model_path, local_files_only=True,
+                                           token=token or os.environ.get("HF_WRITE_TOKEN"))
     return _AutoTokenizerWrapper(hf_tok)
 
 def pretokenize_dataset(data_path: str, model_path: str, max_seq_len: int, cache_path: str):
