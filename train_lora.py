@@ -201,9 +201,8 @@ def main():
 
     check_model_cached(args.model)
 
-    # Import unsloth after CUDA is confirmed ready, before any transformers usage
-    from unsloth import FastLanguageModel
-    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+    from peft import PeftModel, get_peft_model, LoraConfig, TaskType
 
     # ----------------------------------------------------------------
     # 2. Pre-tokenize dataset using mistral_common
@@ -214,16 +213,21 @@ def main():
     print(f"Dataset size: {len(tokenized_dataset)} examples")
 
     # ----------------------------------------------------------------
-    # 3. Load model + attach LoRA adapters (via Unsloth)
+    # 3. Load model + attach LoRA adapters
     # ----------------------------------------------------------------
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    ) if use_4bit else None
 
     print(f"\nLoading model (4-bit={use_4bit})...")
-
-    model, _ = FastLanguageModel.from_pretrained(
-        model_name=args.model,
-        max_seq_length=args.max_seq_len,
-        dtype=None,        # auto-detect bf16/fp16
-        load_in_4bit=use_4bit,
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16,
+        device_map={"": 0},
         local_files_only=True,
         attn_implementation="sdpa",
     )
@@ -232,17 +236,18 @@ def main():
         print(f"Loading existing LoRA adapter from {args.adapter}")
         model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
     else:
-        model = FastLanguageModel.get_peft_model(
-            model,
+        lora_config = LoraConfig(
             r=args.rank,
             lora_alpha=args.rank * 2,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                             "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=0,    # must be 0 for Unsloth kernel optimisations
+            lora_dropout=0,
             bias="none",
-            use_gradient_checkpointing="unsloth",
+            task_type=TaskType.CAUSAL_LM,
         )
+        model = get_peft_model(model, lora_config)
 
+    model.enable_input_require_grads()
     model.print_trainable_parameters()
 
     # ----------------------------------------------------------------
@@ -258,7 +263,7 @@ def main():
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
-        gradient_checkpointing=False,  # handled by use_gradient_checkpointing="unsloth" above
+        gradient_checkpointing=True,
         warmup_steps=10,
         learning_rate=args.lr,
         bf16=bf16_supported,

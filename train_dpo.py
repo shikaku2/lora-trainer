@@ -20,6 +20,8 @@ import argparse
 import json
 import sys
 import torch
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from peft import PeftModel
 
 
 def load_dpo_dataset(data_path: str):
@@ -117,18 +119,20 @@ def main():
     dataset = load_dpo_dataset(args.data)
 
     # ----------------------------------------------------------------
-    # 2. Load base model + QLoRA adapter (via Unsloth)
+    # 2. Load base model + QLoRA adapter
     # ----------------------------------------------------------------
-    from unsloth import FastLanguageModel, PatchDPOTrainer
-    from peft import PeftModel
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    ) if use_4bit else None
 
-    PatchDPOTrainer()
-
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model,
-        max_seq_length=args.max_seq_len,
-        dtype=None,        # auto-detect bf16/fp16
-        load_in_4bit=use_4bit,
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16,
+        device_map={"": 0},
         local_files_only=True,
         attn_implementation="sdpa",
     )
@@ -137,14 +141,13 @@ def main():
     # 3. Load the QLoRA adapter and make it trainable
     # ----------------------------------------------------------------
     model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
+    model.enable_input_require_grads()
     model.print_trainable_parameters()
 
     # ----------------------------------------------------------------
-    # 4. Tokenizer (from Unsloth — already patched for Mistral)
+    # 4. Tokenizer
     # ----------------------------------------------------------------
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
+    tokenizer = load_dpo_tokenizer(args.model)
 
     # ----------------------------------------------------------------
     # 5. DPO training
