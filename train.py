@@ -20,28 +20,6 @@ from pathlib import Path
 # Shared utilities
 # ----------------------------------------------------------------
 
-class _AutoTokenizerWrapper:
-    """
-    Wraps AutoTokenizer to expose the same .instruct_tokenizer.tokenizer.encode(text, bos, eos)
-    interface as MistralTokenizer, so callers don't need to branch.
-    """
-    class _Inner:
-        def __init__(self, hf_tok):
-            self._tok = hf_tok
-
-        def encode(self, text: str, bos: bool = True, eos: bool = True):
-            ids = self._tok.encode(text, add_special_tokens=False)
-            if bos and self._tok.bos_token_id is not None:
-                ids = [self._tok.bos_token_id] + ids
-            if eos and self._tok.eos_token_id is not None:
-                ids = ids + [self._tok.eos_token_id]
-            return ids
-
-    def __init__(self, hf_tok):
-        inner = self._Inner(hf_tok)
-        self.instruct_tokenizer = type("_IT", (), {"tokenizer": inner})()
-
-
 def check_model_cached(model_path: str) -> None:
     """Exit early if model_path is not present in the HF cache (or as a local path)."""
     local = Path(model_path)
@@ -59,7 +37,7 @@ def check_model_cached(model_path: str) -> None:
 
 def load_tokenizer(model_path: str, token: str = None):
     """
-    Load a tokenizer for Mistral-family models.
+    Returns encode(text, bos, eos) -> list[int] for Mistral-family models.
     Tries mistral_common (tekken.json / tokenizer.model) first — official Mistral models
     need this because AutoTokenizer has a broken regex.
     Falls back to AutoTokenizer for merged/derived models that only ship tokenizer.json.
@@ -72,13 +50,15 @@ def load_tokenizer(model_path: str, token: str = None):
         for filename in ("tekken.json", "tokenizer.model"):
             tekken = local / filename
             if tekken.exists():
-                return MistralTokenizer.from_file(str(tekken))
+                tok = MistralTokenizer.from_file(str(tekken))
+                return tok.instruct_tokenizer.tokenizer.encode
     else:
         for filename in ("tekken.json", "tokenizer.model"):
             try:
                 tekken = Path(hf_hub_download(repo_id=model_path, filename=filename,
                                               local_files_only=True))
-                return MistralTokenizer.from_file(str(tekken))
+                tok = MistralTokenizer.from_file(str(tekken))
+                return tok.instruct_tokenizer.tokenizer.encode
             except Exception:
                 pass
 
@@ -90,7 +70,16 @@ def load_tokenizer(model_path: str, token: str = None):
         trust_remote_code=True,
         token=token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN"),
     )
-    return _AutoTokenizerWrapper(hf_tok)
+
+    def encode(text: str, bos: bool = True, eos: bool = True):
+        ids = hf_tok.encode(text, add_special_tokens=False)
+        if bos and hf_tok.bos_token_id is not None:
+            ids = [hf_tok.bos_token_id] + ids
+        if eos and hf_tok.eos_token_id is not None:
+            ids = ids + [hf_tok.eos_token_id]
+        return ids
+
+    return encode
 
 
 def load_dpo_tokenizer(model_path: str):
@@ -163,16 +152,30 @@ def gpu_check():
     print(f"PyTorch: {torch.__version__}  Device: {torch.cuda.get_device_name(0)}")
 
 
+def make_lora_config(rank):
+    from peft import LoraConfig, TaskType
+    return LoraConfig(
+        r=rank,
+        lora_alpha=rank * 2,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+        lora_dropout=0,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+
+
 def make_training_args(output, epochs, batch_size, grad_accum, lr, bf16, fp16,
-                       extra_kwargs=None):
+                       warmup_steps=10, cls=None, **extra):
     from transformers import TrainingArguments
-    kwargs = dict(
+    klass = cls or TrainingArguments
+    return klass(
         output_dir=output,
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=grad_accum,
         gradient_checkpointing=True,
-        warmup_steps=10,
+        warmup_steps=warmup_steps,
         learning_rate=lr,
         bf16=bf16,
         fp16=fp16,
@@ -186,10 +189,8 @@ def make_training_args(output, epochs, batch_size, grad_accum, lr, bf16, fp16,
         report_to="none",
         dataloader_pin_memory=False,
         remove_unused_columns=False,
+        **extra,
     )
-    if extra_kwargs:
-        kwargs.update(extra_kwargs)
-    return TrainingArguments(**kwargs)
 
 
 # ----------------------------------------------------------------
@@ -201,7 +202,8 @@ def cmd_cpt(args):
     check_model_cached(args.model)
 
     use_4bit   = not args.no_4bit
-    cache_path = args.data.replace(".txt", "_cpt_cache")
+    data_p     = Path(args.data)
+    cache_path = str(data_p.parent / (data_p.stem + "_cpt_cache"))
 
     from datasets import Dataset
 
@@ -211,35 +213,25 @@ def cmd_cpt(args):
         dataset = Dataset.load_from_disk(cache_path)
     else:
         print("Tokenizing CPT corpus...")
-        mc_tok = load_tokenizer(args.model)
-        encode = mc_tok.instruct_tokenizer.tokenizer.encode
-        text   = Path(args.data).read_text()
-        all_ids = encode(text, True, False)
+        encode  = load_tokenizer(args.model)
+        all_ids = encode(Path(args.data).read_text(), True, False)
         print(f"  Total tokens: {len(all_ids)}")
         records = []
         for i in range(0, len(all_ids), args.max_seq_len):
             chunk = all_ids[i : i + args.max_seq_len]
             if len(chunk) < 32:
                 continue
-            records.append({"input_ids": chunk, "labels": chunk.copy()})
+            records.append({"input_ids": chunk, "labels": chunk})
+        del all_ids
         dataset = Dataset.from_list(records)
         dataset.save_to_disk(cache_path)
         print(f"  Chunked into {len(dataset)} sequences")
 
     print(f"CPT dataset: {len(dataset)} chunks")
 
-    from peft import get_peft_model, LoraConfig, TaskType
+    from peft import get_peft_model
     model = load_model(args.model, use_4bit)
-    lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank * 2,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=0,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-    )
-    model = get_peft_model(model, lora_config)
+    model = get_peft_model(model, make_lora_config(args.rank))
     model.enable_input_require_grads()
     model.print_trainable_parameters()
 
@@ -273,7 +265,8 @@ def cmd_qlora(args):
     check_model_cached(args.model)
 
     use_4bit   = not args.no_4bit
-    cache_path = args.data.replace(".jsonl", "_tokenized_cache")
+    data_p     = Path(args.data)
+    cache_path = str(data_p.parent / (data_p.stem + "_tokenized_cache"))
 
     from datasets import Dataset
 
@@ -283,8 +276,7 @@ def cmd_qlora(args):
         dataset = Dataset.load_from_disk(cache_path)
     else:
         print("Pre-tokenizing dataset...")
-        mc_tok = load_tokenizer(args.model)
-        encode = mc_tok.instruct_tokenizer.tokenizer.encode
+        encode = load_tokenizer(args.model)
         records, skipped = [], 0
         with open(args.data) as f:
             for line in f:
@@ -296,7 +288,7 @@ def cmd_qlora(args):
                 if len(ids) > args.max_seq_len:
                     ids = ids[:args.max_seq_len]
                     skipped += 1
-                records.append({"input_ids": ids, "labels": ids.copy()})
+                records.append({"input_ids": ids, "labels": ids})
         if skipped:
             print(f"  Truncated {skipped} examples to {args.max_seq_len} tokens")
         dataset = Dataset.from_list(records)
@@ -305,23 +297,14 @@ def cmd_qlora(args):
 
     print(f"Dataset size: {len(dataset)} examples")
 
-    from peft import PeftModel, get_peft_model, LoraConfig, TaskType
+    from peft import PeftModel, get_peft_model
     model = load_model(args.model, use_4bit)
 
     if args.adapter:
         print(f"Loading existing LoRA adapter from {args.adapter}")
         model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
     else:
-        lora_config = LoraConfig(
-            r=args.rank,
-            lora_alpha=args.rank * 2,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=0,
-            bias="none",
-            task_type=TaskType.CAUSAL_LM,
-        )
-        model = get_peft_model(model, lora_config)
+        model = get_peft_model(model, make_lora_config(args.rank))
 
     model.enable_input_require_grads()
     model.print_trainable_parameters()
@@ -356,21 +339,30 @@ def cmd_dpo(args):
     check_model_cached(args.model)
 
     use_4bit = not args.no_4bit
+    data_p   = Path(args.data)
+    cache_path = str(data_p.parent / (data_p.stem + "_dpo_cache"))
 
     from datasets import Dataset
-    records = []
-    with open(args.data) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            prompt = obj["prompt"]
-            if not prompt.endswith("\n"):
-                prompt += "\n"
-            records.append({"prompt": prompt, "chosen": obj["chosen"], "rejected": obj["rejected"]})
-    print(f"Loaded {len(records)} DPO preference pairs")
-    dataset = Dataset.from_list(records)
+
+    cache = Path(cache_path)
+    if cache.exists():
+        print(f"Loading cached DPO dataset from {cache_path}")
+        dataset = Dataset.load_from_disk(cache_path)
+    else:
+        records = []
+        with open(args.data) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                prompt = obj["prompt"]
+                if not prompt.endswith("\n"):
+                    prompt += "\n"
+                records.append({"prompt": prompt, "chosen": obj["chosen"], "rejected": obj["rejected"]})
+        dataset = Dataset.from_list(records)
+        dataset.save_to_disk(cache_path)
+        print(f"Loaded {len(dataset)} DPO preference pairs")
 
     from peft import PeftModel
     model = load_model(args.model, use_4bit)
@@ -382,25 +374,11 @@ def cmd_dpo(args):
 
     from trl import DPOTrainer, DPOConfig
     bf16 = torch.cuda.is_bf16_supported()
-    dpo_config = DPOConfig(
-        output_dir=args.output,
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        gradient_checkpointing=True,
+    dpo_config = make_training_args(
+        args.output, args.epochs, args.batch_size, args.grad_accum,
+        args.lr, bf16, not bf16,
         warmup_steps=5,
-        learning_rate=args.lr,
-        bf16=bf16,
-        fp16=not bf16,
-        logging_steps=5,
-        save_steps=50,
-        save_total_limit=2,
-        optim="adamw_8bit",
-        weight_decay=0.01,
-        lr_scheduler_type="cosine",
-        seed=42,
-        report_to="none",
-        remove_unused_columns=False,
+        cls=DPOConfig,
         beta=args.beta,
         max_length=args.max_seq_len,
     )
