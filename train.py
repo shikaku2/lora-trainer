@@ -11,6 +11,7 @@ Usage:
 import argparse
 import json
 import os
+os.environ.pop("CUDA_VISIBLE_DEVICES", None)  # unsloth device_map conflicts with this env var
 import sys
 import torch
 from pathlib import Path
