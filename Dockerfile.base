@@ -31,4 +31,5 @@ RUN pip install --no-cache-dir \
     hf_transfer \
     protobuf && \
     pip install --no-deps git+https://github.com/unslothai/unsloth_zoo.git && \
-    pip install "unsloth[cu128-torch290] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation
+    pip install "unsloth[cu128-torch290] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation && \
+    pip uninstall -y xformers
