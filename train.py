@@ -145,7 +145,6 @@ def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
         max_seq_length=max_seq_len,
         dtype=None,
         load_in_4bit=use_4bit,
-        local_files_only=True,
     )
     return model
 
