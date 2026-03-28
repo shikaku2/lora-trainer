@@ -11,11 +11,25 @@ Usage:
 import argparse
 import json
 import os
-import types
 
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 from unsloth import FastLanguageModel, PatchDPOTrainer
+# Unsloth's compiled trainer sets model._has_no_labels=True when DPO omits labels,
+# then LlamaModel_fast_forward (bound as MistralModel.forward) multiplies inputs_embeds
+# by the attention mask. Mistral GQA passes a 4D causal mask (batch,1,seq,seq); after
+# unsqueeze/transpose it becomes 5D and fails to broadcast against 3D embeddings.
+# Patch MistralModel.forward at the class level so _has_no_labels is cleared before
+# the check runs on every call — this is one level BELOW MistralForCausalLM.
+try:
+    from transformers.models.mistral.modeling_mistral import MistralModel as _MistralModel
+    _orig_mistral_model_fwd = _MistralModel.forward
+    def _mistral_model_fwd_patched(self, *args, **kwargs):
+        self._has_no_labels = False
+        return _orig_mistral_model_fwd(self, *args, **kwargs)
+    _MistralModel.forward = _mistral_model_fwd_patched
+except Exception as _e:
+    print(f"Warning: MistralModel.forward patch failed: {_e}")
 import sys
 import torch
 from pathlib import Path
@@ -24,24 +38,6 @@ from pathlib import Path
 # ----------------------------------------------------------------
 # Shared utilities
 # ----------------------------------------------------------------
-
-def apply_unsloth_mask_fix(model):
-    """
-    Fixes a broadcasting error in Unsloth's optimized forward pass when labels are missing.
-    Unsloth sets _has_no_labels=True and tries to multiply 3D embeddings by a 4D/5D causal mask.
-    By forcing _has_no_labels=False at the start of forward(), we skip the problematic line.
-    """
-    # Target the base transformer model (usually model.model)
-    base_model = getattr(model, "model", model)
-    original_forward = base_model.forward
-
-    def patched_forward(self, *args, **kwargs):
-        self._has_no_labels = False
-        return original_forward(*args, **kwargs)
-
-    base_model.forward = types.MethodType(patched_forward, base_model)
-    print("  Applied Unsloth broadcasting patch to model instance")
-
 
 def check_model_cached(model_path: str) -> None:
     """Exit early if model_path is not present in the HF cache (or as a local path)."""
@@ -177,7 +173,6 @@ def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
         load_in_4bit=use_4bit,
         device_map={"": 0},  # force all layers onto cuda:0
     )
-    apply_unsloth_mask_fix(model)
     return model
 
 
@@ -408,7 +403,6 @@ def cmd_dpo(args):
         device_map={"": 0},
     )
     FastLanguageModel.for_training(model)
-    apply_unsloth_mask_fix(model)
     model.print_trainable_parameters()
 
     tokenizer = load_dpo_tokenizer(args.model)
