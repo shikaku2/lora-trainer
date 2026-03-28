@@ -3,7 +3,7 @@
 RunPod serverless handler — full 3-stage training pipeline:
   Stage 1  CPT   (Continued Pre-Training)  on plain-text corpus
   Stage 2  QLoRA (instruction fine-tuning) on dialogue examples
-  Stage 3  DPO   (preference alignment)    on chosen/rejected pairs
+  Stage 3  DPO   (preference alignment)    on chosen/rejected pairs 
 
 Each stage uploads its adapter to HuggingFace immediately after completing.
 On the next run, completed stages are downloaded and skipped automatically,
