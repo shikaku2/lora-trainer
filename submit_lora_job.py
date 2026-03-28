@@ -214,6 +214,7 @@ try:
     runpod.api_key = api_key
 
     pod_env = {
+        "HF_TOKEN":           hf_token,
         "HF_WRITE_TOKEN":     hf_token,
         "HF_REPO":            hf_repo,
         "TRAINING_DATA_REPO": training_data_repo,
