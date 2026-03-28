@@ -57,9 +57,7 @@ log = logging.getLogger("lora-trainer")
 
 DEFAULT_MODEL  = os.getenv("MODEL_PATH", "unsloth/Magistral-Small-2509")
 SCRIPT_DIR     = Path(__file__).parent
-TRAIN_CPT      = SCRIPT_DIR / "train_cpt.py"
-TRAIN_LORA     = SCRIPT_DIR / "train_lora.py"
-TRAIN_DPO      = SCRIPT_DIR / "train_dpo.py"
+TRAIN          = SCRIPT_DIR / "train.py"
 
 
 def _run(cmd, cwd=None, timeout=7200, log_prefix=""):
@@ -204,7 +202,7 @@ def run_training_job(event: dict) -> dict:
             log.info("=== Stage 1/3: CPT ===")
             t0 = time.time()
             cmd = [
-                sys.executable, str(TRAIN_CPT),
+                sys.executable, str(TRAIN), "cpt",
                 "--model",       model_path,
                 "--data",        str(cpt_path),
                 "--output",      str(cpt_out),
@@ -244,7 +242,7 @@ def run_training_job(event: dict) -> dict:
             time.sleep(5)
             t0 = time.time()
             cmd = [
-                sys.executable, str(TRAIN_LORA),
+                sys.executable, str(TRAIN), "qlora",
                 "--model",       model_path,
                 "--adapter",     str(cpt_out),
                 "--data",        str(lora_path),
@@ -294,7 +292,7 @@ def run_training_job(event: dict) -> dict:
         time.sleep(5)
         t0 = time.time()
         cmd = [
-            sys.executable, str(TRAIN_DPO),
+            sys.executable, str(TRAIN), "dpo",
             "--model",       model_path,
             "--adapter",     str(lora_out),
             "--data",        str(dpo_path),

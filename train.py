@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""
+Unified training script — CPT, QLoRA, and DPO stages.
+
+Usage:
+    python train.py cpt   --model <id> --data corpus.txt   --output ./cpt-out
+    python train.py qlora --model <id> --data train.jsonl  --output ./lora-out [--adapter ./cpt-out]
+    python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out   --adapter ./lora-out
+"""
+
+import argparse
+import json
+import os
+import sys
+import torch
+from pathlib import Path
+
+
+# ----------------------------------------------------------------
+# Shared utilities
+# ----------------------------------------------------------------
+
+class _AutoTokenizerWrapper:
+    """
+    Wraps AutoTokenizer to expose the same .instruct_tokenizer.tokenizer.encode(text, bos, eos)
+    interface as MistralTokenizer, so callers don't need to branch.
+    """
+    class _Inner:
+        def __init__(self, hf_tok):
+            self._tok = hf_tok
+
+        def encode(self, text: str, bos: bool = True, eos: bool = True):
+            ids = self._tok.encode(text, add_special_tokens=False)
+            if bos and self._tok.bos_token_id is not None:
+                ids = [self._tok.bos_token_id] + ids
+            if eos and self._tok.eos_token_id is not None:
+                ids = ids + [self._tok.eos_token_id]
+            return ids
+
+    def __init__(self, hf_tok):
+        inner = self._Inner(hf_tok)
+        self.instruct_tokenizer = type("_IT", (), {"tokenizer": inner})()
+
+
+def check_model_cached(model_path: str) -> None:
+    """Exit early if model_path is not present in the HF cache (or as a local path)."""
+    local = Path(model_path)
+    if local.exists():
+        return
+    hf_home = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    cache_name = "models--" + model_path.replace("/", "--")
+    snapshots_dir = hf_home / "hub" / cache_name / "snapshots"
+    if not snapshots_dir.exists() or not any(snapshots_dir.iterdir()):
+        print(f"ERROR: Model '{model_path}' not found in HF cache.")
+        print(f"  Expected: {snapshots_dir}")
+        sys.exit(1)
+    print(f"  Model cache verified: {snapshots_dir}")
+
+
+def load_tokenizer(model_path: str, token: str = None):
+    """
+    Load a tokenizer for Mistral-family models.
+    Tries mistral_common (tekken.json / tokenizer.model) first — official Mistral models
+    need this because AutoTokenizer has a broken regex.
+    Falls back to AutoTokenizer for merged/derived models that only ship tokenizer.json.
+    """
+    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    from huggingface_hub import hf_hub_download
+
+    local = Path(model_path)
+    if local.exists():
+        for filename in ("tekken.json", "tokenizer.model"):
+            tekken = local / filename
+            if tekken.exists():
+                return MistralTokenizer.from_file(str(tekken))
+    else:
+        for filename in ("tekken.json", "tokenizer.model"):
+            try:
+                tekken = Path(hf_hub_download(repo_id=model_path, filename=filename,
+                                              local_files_only=True))
+                return MistralTokenizer.from_file(str(tekken))
+            except Exception:
+                pass
+
+    print("  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
+    from transformers import AutoTokenizer
+    hf_tok = AutoTokenizer.from_pretrained(
+        model_path,
+        local_files_only=True,
+        trust_remote_code=True,
+        token=token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN"),
+    )
+    return _AutoTokenizerWrapper(hf_tok)
+
+
+def load_dpo_tokenizer(model_path: str):
+    from transformers import AutoTokenizer
+    attempts = [
+        {"use_fast": False, "trust_remote_code": True},
+        {"use_fast": True,  "trust_remote_code": True},
+        {"use_fast": False},
+    ]
+    last_error = None
+    for kwargs in attempts:
+        try:
+            tok = AutoTokenizer.from_pretrained(model_path, local_files_only=True, **kwargs)
+            if tok.pad_token is None:
+                tok.pad_token = tok.eos_token
+            tok.padding_side = "left"
+            print(f"  Loaded tokenizer with {kwargs}")
+            return tok
+        except Exception as e:
+            last_error = e
+            print(f"  Tokenizer attempt failed {kwargs}: {e}")
+    raise RuntimeError(f"Failed to load tokenizer for {model_path}: {last_error}")
+
+
+class SimpleCollator:
+    """Pads input_ids/labels to longest sequence; masks padding with -100."""
+    def __init__(self, pad_id: int = 0):
+        self.pad_id = pad_id
+
+    def __call__(self, features):
+        max_len = max(len(f["input_ids"]) for f in features)
+        max_len = ((max_len + 7) // 8) * 8
+        input_ids, labels, attention_mask = [], [], []
+        for f in features:
+            ids = f["input_ids"]
+            pad = max_len - len(ids)
+            input_ids.append(ids + [self.pad_id] * pad)
+            labels.append(f["labels"] + [-100] * pad)
+            attention_mask.append([1] * len(ids) + [0] * pad)
+        return {
+            "input_ids":      torch.tensor(input_ids,      dtype=torch.long),
+            "labels":         torch.tensor(labels,         dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+        }
+
+
+def load_model(model_path: str, use_4bit: bool):
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    ) if use_4bit else None
+    print(f"\nLoading model (4-bit={use_4bit})...")
+    return AutoModelForCausalLM.from_pretrained(
+        model_path,
+        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16,
+        device_map={"": 0},
+        local_files_only=True,
+        attn_implementation="sdpa",
+    )
+
+
+def gpu_check():
+    if not torch.cuda.is_available():
+        print("ERROR: No GPU detected — aborting.")
+        sys.exit(1)
+    print(f"PyTorch: {torch.__version__}  Device: {torch.cuda.get_device_name(0)}")
+
+
+def make_training_args(output, epochs, batch_size, grad_accum, lr, bf16, fp16,
+                       extra_kwargs=None):
+    from transformers import TrainingArguments
+    kwargs = dict(
+        output_dir=output,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        gradient_checkpointing=True,
+        warmup_steps=10,
+        learning_rate=lr,
+        bf16=bf16,
+        fp16=fp16,
+        logging_steps=5,
+        save_steps=50,
+        save_total_limit=2,
+        optim="adamw_8bit",
+        weight_decay=0.01,
+        lr_scheduler_type="cosine",
+        seed=42,
+        report_to="none",
+        dataloader_pin_memory=False,
+        remove_unused_columns=False,
+    )
+    if extra_kwargs:
+        kwargs.update(extra_kwargs)
+    return TrainingArguments(**kwargs)
+
+
+# ----------------------------------------------------------------
+# Stage: CPT
+# ----------------------------------------------------------------
+
+def cmd_cpt(args):
+    gpu_check()
+    check_model_cached(args.model)
+
+    use_4bit   = not args.no_4bit
+    cache_path = args.data.replace(".txt", "_cpt_cache")
+
+    from datasets import Dataset
+
+    cache = Path(cache_path)
+    if cache.exists():
+        print(f"Loading cached CPT dataset from {cache_path}")
+        dataset = Dataset.load_from_disk(cache_path)
+    else:
+        print("Tokenizing CPT corpus...")
+        mc_tok = load_tokenizer(args.model)
+        encode = mc_tok.instruct_tokenizer.tokenizer.encode
+        text   = Path(args.data).read_text()
+        all_ids = encode(text, True, False)
+        print(f"  Total tokens: {len(all_ids)}")
+        records = []
+        for i in range(0, len(all_ids), args.max_seq_len):
+            chunk = all_ids[i : i + args.max_seq_len]
+            if len(chunk) < 32:
+                continue
+            records.append({"input_ids": chunk, "labels": chunk.copy()})
+        dataset = Dataset.from_list(records)
+        dataset.save_to_disk(cache_path)
+        print(f"  Chunked into {len(dataset)} sequences")
+
+    print(f"CPT dataset: {len(dataset)} chunks")
+
+    from peft import get_peft_model, LoraConfig, TaskType
+    model = load_model(args.model, use_4bit)
+    lora_config = LoraConfig(
+        r=args.rank,
+        lora_alpha=args.rank * 2,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+        lora_dropout=0,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+    model = get_peft_model(model, lora_config)
+    model.enable_input_require_grads()
+    model.print_trainable_parameters()
+
+    bf16 = torch.cuda.is_bf16_supported()
+    training_args = make_training_args(
+        args.output, args.epochs, args.batch_size, args.grad_accum,
+        args.lr, bf16, not bf16,
+    )
+
+    from transformers import Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        data_collator=SimpleCollator(pad_id=0),
+    )
+    print("\nStarting CPT training...")
+    trainer.train()
+
+    print(f"\nSaving CPT adapter to {args.output}")
+    model.save_pretrained(args.output)
+    print("Done!")
+
+
+# ----------------------------------------------------------------
+# Stage: QLoRA
+# ----------------------------------------------------------------
+
+def cmd_qlora(args):
+    gpu_check()
+    check_model_cached(args.model)
+
+    use_4bit   = not args.no_4bit
+    cache_path = args.data.replace(".jsonl", "_tokenized_cache")
+
+    from datasets import Dataset
+
+    cache = Path(cache_path)
+    if cache.exists():
+        print(f"Loading cached dataset from {cache_path}")
+        dataset = Dataset.load_from_disk(cache_path)
+    else:
+        print("Pre-tokenizing dataset...")
+        mc_tok = load_tokenizer(args.model)
+        encode = mc_tok.instruct_tokenizer.tokenizer.encode
+        records, skipped = [], 0
+        with open(args.data) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                text = json.loads(line)["text"]
+                ids  = encode(text, True, True)
+                if len(ids) > args.max_seq_len:
+                    ids = ids[:args.max_seq_len]
+                    skipped += 1
+                records.append({"input_ids": ids, "labels": ids.copy()})
+        if skipped:
+            print(f"  Truncated {skipped} examples to {args.max_seq_len} tokens")
+        dataset = Dataset.from_list(records)
+        dataset.save_to_disk(cache_path)
+        print(f"  Tokenized {len(dataset)} examples, saved to {cache_path}")
+
+    print(f"Dataset size: {len(dataset)} examples")
+
+    from peft import PeftModel, get_peft_model, LoraConfig, TaskType
+    model = load_model(args.model, use_4bit)
+
+    if args.adapter:
+        print(f"Loading existing LoRA adapter from {args.adapter}")
+        model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
+    else:
+        lora_config = LoraConfig(
+            r=args.rank,
+            lora_alpha=args.rank * 2,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=0,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+        model = get_peft_model(model, lora_config)
+
+    model.enable_input_require_grads()
+    model.print_trainable_parameters()
+
+    bf16 = torch.cuda.is_bf16_supported()
+    training_args = make_training_args(
+        args.output, args.epochs, args.batch_size, args.grad_accum,
+        args.lr, bf16, not bf16,
+    )
+
+    from transformers import Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        data_collator=SimpleCollator(pad_id=0),
+    )
+    print("\nStarting QLoRA training...")
+    trainer.train()
+
+    print(f"\nSaving QLoRA adapter to {args.output}")
+    model.save_pretrained(args.output)
+    print("Done!")
+
+
+# ----------------------------------------------------------------
+# Stage: DPO
+# ----------------------------------------------------------------
+
+def cmd_dpo(args):
+    gpu_check()
+    check_model_cached(args.model)
+
+    use_4bit = not args.no_4bit
+
+    from datasets import Dataset
+    records = []
+    with open(args.data) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            prompt = obj["prompt"]
+            if not prompt.endswith("\n"):
+                prompt += "\n"
+            records.append({"prompt": prompt, "chosen": obj["chosen"], "rejected": obj["rejected"]})
+    print(f"Loaded {len(records)} DPO preference pairs")
+    dataset = Dataset.from_list(records)
+
+    from peft import PeftModel
+    model = load_model(args.model, use_4bit)
+    model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
+    model.enable_input_require_grads()
+    model.print_trainable_parameters()
+
+    tokenizer = load_dpo_tokenizer(args.model)
+
+    from trl import DPOTrainer, DPOConfig
+    bf16 = torch.cuda.is_bf16_supported()
+    dpo_config = DPOConfig(
+        output_dir=args.output,
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        gradient_checkpointing=True,
+        warmup_steps=5,
+        learning_rate=args.lr,
+        bf16=bf16,
+        fp16=not bf16,
+        logging_steps=5,
+        save_steps=50,
+        save_total_limit=2,
+        optim="adamw_8bit",
+        weight_decay=0.01,
+        lr_scheduler_type="cosine",
+        seed=42,
+        report_to="none",
+        remove_unused_columns=False,
+        beta=args.beta,
+        max_length=args.max_seq_len,
+    )
+    trainer = DPOTrainer(
+        model=model,
+        ref_model=None,
+        args=dpo_config,
+        train_dataset=dataset,
+        processing_class=tokenizer,
+    )
+    print("\nStarting DPO training...")
+    trainer.train()
+
+    print(f"\nSaving DPO adapter to {args.output}")
+    model.save_pretrained(args.output)
+    print("Done!")
+
+
+# ----------------------------------------------------------------
+# Argument parsing
+# ----------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="CPT / QLoRA / DPO trainer")
+    sub = parser.add_subparsers(dest="stage", required=True)
+
+    # Shared args
+    def add_common(p):
+        p.add_argument("--model",      default="unsloth/Magistral-Small-2509")
+        p.add_argument("--data",       required=True)
+        p.add_argument("--output",     required=True)
+        p.add_argument("--epochs",     type=int,   default=1)
+        p.add_argument("--batch-size", type=int,   default=1,   dest="batch_size")
+        p.add_argument("--grad-accum", type=int,   default=8,   dest="grad_accum")
+        p.add_argument("--max-seq-len",type=int,   default=2048,dest="max_seq_len")
+        p.add_argument("--no-4bit",    action="store_true",     dest="no_4bit")
+
+    # CPT
+    p_cpt = sub.add_parser("cpt", help="Continued pre-training on plain text")
+    add_common(p_cpt)
+    p_cpt.add_argument("--rank", type=int,   default=16)
+    p_cpt.add_argument("--lr",   type=float, default=1e-4)
+
+    # QLoRA
+    p_qlora = sub.add_parser("qlora", help="QLoRA instruction fine-tuning")
+    add_common(p_qlora)
+    p_qlora.add_argument("--adapter", default=None, help="Existing adapter to continue from")
+    p_qlora.add_argument("--rank",    type=int,   default=16)
+    p_qlora.add_argument("--lr",      type=float, default=2e-4)
+
+    # DPO
+    p_dpo = sub.add_parser("dpo", help="DPO preference alignment")
+    add_common(p_dpo)
+    p_dpo.add_argument("--adapter", required=True, help="QLoRA adapter to continue from")
+    p_dpo.add_argument("--lr",      type=float, default=5e-5)
+    p_dpo.add_argument("--beta",    type=float, default=0.1)
+
+    args = parser.parse_args()
+    {"cpt": cmd_cpt, "qlora": cmd_qlora, "dpo": cmd_dpo}[args.stage](args)
+
+
+if __name__ == "__main__":
+    main()
