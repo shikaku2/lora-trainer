@@ -139,6 +139,9 @@ class SimpleCollator:
 
 def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
     from unsloth import FastLanguageModel
+    import transformers.modeling_utils as _mu
+    if hasattr(_mu, "caching_allocator_warmup"):
+        _mu.caching_allocator_warmup = lambda *a, **kw: None
     print(f"\nLoading model (4-bit={use_4bit})...")
     model, _ = FastLanguageModel.from_pretrained(
         model_name=model_path,
