@@ -388,6 +388,12 @@ def cmd_dpo(args):
         device_map={"": 0},
     )
     FastLanguageModel.for_training(model)
+    # DPO passes a 4D causal mask; unsloth's _has_no_labels path assumes 2D and
+    # crashes when it tries to broadcast (batch,1,seq,seq) against (batch,seq,hidden).
+    # Disabling the flag skips that embedding-masking shortcut entirely.
+    for _m in model.modules():
+        if hasattr(_m, "_has_no_labels"):
+            _m._has_no_labels = False
     model.print_trainable_parameters()
 
     tokenizer = load_dpo_tokenizer(args.model)
