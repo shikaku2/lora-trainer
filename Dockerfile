@@ -1,4 +1,4 @@
-# Code-only layer — rebuilds on every push in seconds 
+# Code-only layer — rebuilds on every push in seconds
 FROM ghcr.io/shikaku2/lora-trainer-base:latest
 
 COPY handler.py         /workspace/handler.py

@@ -41,6 +41,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from huggingface_hub import HfApi
+
 
 def estimate_disk_gb(model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank):
     """
@@ -52,8 +54,6 @@ def estimate_disk_gb(model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, ran
     Data caches: 2× the raw file sizes (Arrow tokenized datasets).
     Overhead:   3 GB fixed (OS, unsloth compiled cache, temp files).
     """
-    from huggingface_hub import HfApi
-
     model_gb = 0.0
     if not Path(model_path).exists():  # skip local paths
         try:
@@ -65,7 +65,7 @@ def estimate_disk_gb(model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, ran
         except Exception:
             pass  # non-critical; disk allocation falls back to minimum
 
-    adapter_gb_each = model_gb * (rank / 16) * 0.004  # ~0.4% of bf16 weight size
+    adapter_gb_each = model_gb * (rank / 16) * 0.004
     adapters_gb = adapter_gb_each * 3                  # CPT + QLoRA + DPO
 
     data_gb = (len(cpt_bytes) + len(lora_bytes) + len(dpo_bytes)) * 2 / 1e9
@@ -234,7 +234,6 @@ print(f"  Estimated total {total_gb:.1f} GB  →  allocating {container_disk_gb}
 # ----------------------------------------------------------------
 print(f"\nUploading training data to {training_data_repo}...")
 try:
-    from huggingface_hub import HfApi
     api = HfApi(token=hf_token)
     api.create_repo(training_data_repo, repo_type="model", exist_ok=True, private=True)
 
@@ -337,7 +336,6 @@ while True:
 # ----------------------------------------------------------------
 print(f"\nChecking HuggingFace repo for results...")
 try:
-    from huggingface_hub import HfApi
     api = HfApi(token=hf_token)
 
     try:

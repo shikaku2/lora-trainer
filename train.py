@@ -17,6 +17,9 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 from unsloth import FastLanguageModel, PatchDPOTrainer
 import sys
 import torch
+import transformers.modeling_utils as _mu
+if hasattr(_mu, "caching_allocator_warmup"):
+    _mu.caching_allocator_warmup = lambda *a, **kw: None
 from pathlib import Path
 
 
@@ -71,14 +74,13 @@ def load_tokenizer(model_path: str, token: str = None):
     _tok_token = token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
     _tok_kwargs = dict(local_files_only=True, token=_tok_token)
     hf_tok = None
-    for _attempt, _kwargs in [
-        ("AutoTokenizer slow",           dict(**_tok_kwargs, trust_remote_code=True, use_fast=False)),
-        ("AutoTokenizer fast",           dict(**_tok_kwargs, trust_remote_code=True, use_fast=True)),
-        ("PreTrainedTokenizerFast",      _tok_kwargs),
+    for _cls, _attempt, _kwargs in [
+        (AutoTokenizer,           "AutoTokenizer slow",      dict(**_tok_kwargs, trust_remote_code=True, use_fast=False)),
+        (AutoTokenizer,           "AutoTokenizer fast",      dict(**_tok_kwargs, trust_remote_code=True, use_fast=True)),
+        (PreTrainedTokenizerFast, "PreTrainedTokenizerFast", _tok_kwargs),
     ]:
         try:
-            cls = PreTrainedTokenizerFast if "PreTrainedTokenizerFast" in _attempt else AutoTokenizer
-            hf_tok = cls.from_pretrained(model_path, **_kwargs)
+            hf_tok = _cls.from_pretrained(model_path, **_kwargs)
             print(f"  Loaded tokenizer via {_attempt}")
             break
         except Exception as e:
@@ -142,9 +144,6 @@ class SimpleCollator:
 
 
 def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
-    import transformers.modeling_utils as _mu
-    if hasattr(_mu, "caching_allocator_warmup"):
-        _mu.caching_allocator_warmup = lambda *a, **kw: None
     print(f"\nLoading model (4-bit={use_4bit})...")
     print(f"  CUDA available: {torch.cuda.is_available()}")
     print(f"  CUDA device count: {torch.cuda.device_count()}")
