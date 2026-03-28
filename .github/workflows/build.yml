@@ -3,6 +3,11 @@ name: Build and Push to GHCR
 on:
   push:
     branches: ["main"]
+    paths-ignore:
+      - "Dockerfile.base"
+  workflow_run:
+    workflows: ["Build Base Image"]
+    types: [completed]
   workflow_dispatch:
 
 jobs:
@@ -16,20 +21,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Free up disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      - name: Show disk usage after cleanup
-        run: df -h
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

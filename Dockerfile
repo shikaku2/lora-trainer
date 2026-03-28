@@ -1,35 +1,5 @@
-# CUDA + PyTorch base
-FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-devel
-
-ENV PYTHONUNBUFFERED=1 \
-    HF_HOME=/workspace/huggingface-cache \
-    TRANSFORMERS_CACHE=/workspace/huggingface-cache/hub \
-    HUGGINGFACE_HUB_CACHE=/workspace/huggingface-cache/hub \
-    HF_HUB_ENABLE_HF_TRANSFER=1 \
-    TRUST_REMOTE_CODE=true
-
-WORKDIR /workspace
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client \
-    git \
- && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \
-    runpod \
-    mistral-common \
-    peft \
-    bitsandbytes \
-    "transformers==5.3.0" \
-    sentencepiece \
-    datasets \
-    accelerate \
-    trl \
-    hf_transfer \
-    protobuf \
-    "unsloth[cu128-torch270] @ git+https://github.com/unslothai/unsloth.git" \
-    unsloth_zoo && \
-    pip uninstall -y xformers || true
+# Code-only layer — rebuilds on every push in seconds
+FROM ghcr.io/shikaku2/lora-trainer-base:latest
 
 COPY handler.py         /workspace/handler.py
 COPY pod_entrypoint.py  /workspace/pod_entrypoint.py

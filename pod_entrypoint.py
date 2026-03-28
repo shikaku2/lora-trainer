@@ -77,21 +77,33 @@ def terminate_pod() -> None:
 
 
 def upload_error_log(repo: str, token: str, text: str) -> None:
+    import io
+    import time
+    from huggingface_hub import HfApi
+    api = HfApi(token=token)
     try:
-        from huggingface_hub import HfApi
-        import io
-        api = HfApi(token=token)
         api.create_repo(repo, repo_type="model", exist_ok=True, private=True)
-        api.upload_file(
-            path_or_fileobj=io.BytesIO(text.encode()),
-            path_in_repo="pod_error.log",
-            repo_id=repo,
-            repo_type="model",
-            commit_message="pod error log",
-        )
-        log.info("Error log uploaded to %s/pod_error.log", repo)
     except Exception as e:
-        log.warning("Could not upload error log: %s", e)
+        log.warning("Could not create error log repo %s: %s", repo, e)
+        return
+    # Retry upload a few times — HF repo creation can be eventually consistent
+    for attempt in range(3):
+        try:
+            api.upload_file(
+                path_or_fileobj=io.BytesIO(text.encode()),
+                path_in_repo="pod_error.log",
+                repo_id=repo,
+                repo_type="model",
+                commit_message="pod error log",
+            )
+            log.info("Error log uploaded to %s/pod_error.log", repo)
+            return
+        except Exception as e:
+            if attempt < 2:
+                log.warning("Upload attempt %d failed, retrying: %s", attempt + 1, e)
+                time.sleep(5)
+            else:
+                log.warning("Could not upload error log after 3 attempts: %s", e)
 
 
 def main() -> None:
