@@ -348,19 +348,8 @@ if state:
     pod_id    = state["pod_id"]
     volume_id = state["volume_id"]
     print(f"\nPatching pod {pod_id} with latest image ({docker_image})...")
-    patch_body = json.dumps({"imageName": docker_image, "env": pod_env}).encode()
-    patch_req = urllib.request.Request(
-        f"https://rest.runpod.io/v1/pods/{pod_id}",
-        data=patch_body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-        },
-        method="PATCH",
-    )
     try:
-        with urllib.request.urlopen(patch_req, timeout=30) as r:
-            r.read()
+        _rest("PATCH", f"/pods/{pod_id}", {"imageName": docker_image, "env": pod_env})
         print(f"  Pod patched.")
     except urllib.error.HTTPError as e:
         print(f"ERROR: Failed to patch pod {pod_id}: HTTP {e.code}: {e.read().decode()}")
