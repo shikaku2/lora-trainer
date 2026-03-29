@@ -37,6 +37,7 @@ Optional env vars (with defaults):
   FORCE_CPT       re-run CPT even if cached (0/1)  [0]
   FORCE_QLORA     re-run QLoRA even if cached      [0]
   FORCE_DPO       re-run DPO even if cached        [0]
+  GH_TOKEN        GitHub token for GHCR digest resolution (optional, for private images)
 """
 
 import base64
