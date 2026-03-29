@@ -46,7 +46,9 @@ from huggingface_hub import HfApi
 
 def estimate_disk_gb(model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank):
     """
-    Estimate pod disk usage and return (model_gb, adapters_gb, data_gb, total_gb).
+    Estimate pod disk usage.
+
+    Returns (model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb).
 
     Model size: actual weight file sizes queried from the HF Hub.
     Adapters:   ~0.4% of model bf16 weight size per stage, scaled by rank/16.
@@ -279,6 +281,8 @@ try:
         "FORCE_QLORA":        "1" if force_qlora else "0",
         "FORCE_DPO":          "1" if force_dpo   else "0",
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        **({ "CUDA_LAUNCH_BLOCKING": os.environ["CUDA_LAUNCH_BLOCKING"] }
+           if "CUDA_LAUNCH_BLOCKING" in os.environ else {}),
     }
 
     pod = runpod.create_pod(

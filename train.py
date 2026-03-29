@@ -13,7 +13,6 @@ import json
 import os
 
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 from unsloth import FastLanguageModel, PatchDPOTrainer
 import sys
 import torch
@@ -40,6 +39,25 @@ def check_model_cached(model_path: str) -> None:
         print(f"  Expected: {snapshots_dir}")
         sys.exit(1)
     print(f"  Model cache verified: {snapshots_dir}")
+
+
+def _try_autotokenizer(model_path: str, token: str = None):
+    """Try multiple AutoTokenizer loading strategies, return the first that works."""
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+    _token = token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
+    base = dict(local_files_only=True, token=_token)
+    for _cls, _label, _kwargs in [
+        (AutoTokenizer,           "AutoTokenizer slow",      dict(**base, trust_remote_code=True, use_fast=False)),
+        (AutoTokenizer,           "AutoTokenizer fast",      dict(**base, trust_remote_code=True, use_fast=True)),
+        (PreTrainedTokenizerFast, "PreTrainedTokenizerFast", base),
+    ]:
+        try:
+            tok = _cls.from_pretrained(model_path, **_kwargs)
+            print(f"  Loaded tokenizer via {_label}")
+            return tok
+        except Exception as e:
+            print(f"  {_label} failed: {e}")
+    raise RuntimeError(f"Could not load any tokenizer for {model_path}")
 
 
 def load_tokenizer(model_path: str, token: str = None):
@@ -70,23 +88,8 @@ def load_tokenizer(model_path: str, token: str = None):
                 pass
 
     print("  No tekken.json/tokenizer.model found — falling back to AutoTokenizer")
-    from transformers import AutoTokenizer, PreTrainedTokenizerFast
     _tok_token = token or os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
-    _tok_kwargs = dict(local_files_only=True, token=_tok_token)
-    hf_tok = None
-    for _cls, _attempt, _kwargs in [
-        (AutoTokenizer,           "AutoTokenizer slow",      dict(**_tok_kwargs, trust_remote_code=True, use_fast=False)),
-        (AutoTokenizer,           "AutoTokenizer fast",      dict(**_tok_kwargs, trust_remote_code=True, use_fast=True)),
-        (PreTrainedTokenizerFast, "PreTrainedTokenizerFast", _tok_kwargs),
-    ]:
-        try:
-            hf_tok = _cls.from_pretrained(model_path, **_kwargs)
-            print(f"  Loaded tokenizer via {_attempt}")
-            break
-        except Exception as e:
-            print(f"  {_attempt} failed: {e}")
-    if hf_tok is None:
-        raise RuntimeError(f"Could not load any tokenizer for {model_path}")
+    hf_tok = _try_autotokenizer(model_path, token=_tok_token)
 
     def encode(text: str, bos: bool = True, eos: bool = True):
         ids = hf_tok.encode(text, add_special_tokens=False)
@@ -100,25 +103,11 @@ def load_tokenizer(model_path: str, token: str = None):
 
 
 def load_dpo_tokenizer(model_path: str):
-    from transformers import AutoTokenizer
-    attempts = [
-        {"use_fast": False, "trust_remote_code": True},
-        {"use_fast": True,  "trust_remote_code": True},
-        {"use_fast": False},
-    ]
-    last_error = None
-    for kwargs in attempts:
-        try:
-            tok = AutoTokenizer.from_pretrained(model_path, local_files_only=True, **kwargs)
-            if tok.pad_token is None:
-                tok.pad_token = tok.eos_token
-            tok.padding_side = "right"  # unsloth assumes right-padding in its embedding mask
-            print(f"  Loaded tokenizer with {kwargs}")
-            return tok
-        except Exception as e:
-            last_error = e
-            print(f"  Tokenizer attempt failed {kwargs}: {e}")
-    raise RuntimeError(f"Failed to load tokenizer for {model_path}: {last_error}")
+    tok = _try_autotokenizer(model_path)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    tok.padding_side = "right"  # unsloth assumes right-padding in its embedding mask
+    return tok
 
 
 class SimpleCollator:
