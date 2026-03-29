@@ -213,6 +213,74 @@ def _rest(method: str, path: str, body=None):
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
+
+def resolve_image_digest(image: str, gh_token: str = "") -> str:
+    """
+    Resolve a Docker image :tag to an @sha256:digest reference.
+    This guarantees RunPod re-pulls the image on PATCH even when the tag is :latest.
+    Returns the original image string unchanged if resolution fails.
+    """
+    if "@sha256:" in image:
+        return image  # already pinned to a digest
+
+    # Split base:tag
+    last_segment = image.split("/")[-1]
+    if ":" in last_segment:
+        base, tag = image.rsplit(":", 1)
+    else:
+        base, tag = image, "latest"
+
+    # Derive registry and repository path
+    first, *rest = base.split("/")
+    if "." in first or ":" in first:   # has a hostname (e.g. ghcr.io)
+        registry = first
+        repo = "/".join(rest)
+    else:
+        registry = "registry-1.docker.io"
+        repo = base if "/" in base else f"library/{base}"
+
+    # Fetch bearer token — GHCR supports anonymous pull for public images;
+    # pass GH_TOKEN as Basic auth password for private packages.
+    try:
+        auth_headers = {}
+        if gh_token:
+            creds = base64.b64encode(f"token:{gh_token}".encode()).decode()
+            auth_headers["Authorization"] = f"Basic {creds}"
+        token_req = urllib.request.Request(
+            f"https://{registry}/token?scope=repository:{repo}:pull&service={registry}",
+            headers=auth_headers,
+        )
+        with urllib.request.urlopen(token_req, timeout=10) as r:
+            bearer = json.loads(r.read()).get("token", "")
+    except Exception as e:
+        print(f"  (image digest: token fetch failed — {e})")
+        return image
+
+    # HEAD the manifest — the registry returns Docker-Content-Digest in the headers
+    try:
+        manifest_req = urllib.request.Request(
+            f"https://{registry}/v2/{repo}/manifests/{tag}",
+            headers={
+                "Authorization": f"Bearer {bearer}",
+                "Accept": ", ".join([
+                    "application/vnd.oci.image.index.v1+json",
+                    "application/vnd.docker.distribution.manifest.list.v2+json",
+                    "application/vnd.oci.image.manifest.v1+json",
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                ]),
+            },
+            method="HEAD",
+        )
+        with urllib.request.urlopen(manifest_req, timeout=10) as r:
+            digest = r.headers.get("Docker-Content-Digest", "")
+        if digest:
+            return f"{base}@{digest}"
+        print(f"  (image digest: no Docker-Content-Digest header returned)")
+    except Exception as e:
+        print(f"  (image digest: manifest fetch failed — {e})")
+
+    return image
+
 # ----------------------------------------------------------------
 # Check for existing state (restart mode)
 # ----------------------------------------------------------------
