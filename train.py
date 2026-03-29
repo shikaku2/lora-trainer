@@ -211,25 +211,31 @@ def apply_lora(model, rank: int):
         bias="none",
         use_gradient_checkpointing=gc,
     )
-    inner = getattr(getattr(getattr(model, "base_model", model), "model", model), "model", model)
 
-    # Freeze vision tower — text-only batches never activate it, so leaving it trainable
-    # disconnects the loss from the computation graph.
+    # After get_peft_model the hierarchy is:
+    #   model (PeftModel) → .base_model (LoraModel) → .model (Mistral3ForConditionalGeneration)
+    #                                                         → .model (Mistral3Model)
+    #                                                                  → .language_model (MistralForCausalLM)
+    #                                                                  → .vision_tower
+    #
+    # PEFT calls vlm.forward() directly. We must patch at that level — patching inner.forward
+    # (Mistral3Model) is too deep: the unsloth-compiled Mistral3ForConditionalGeneration_forward
+    # runs first, gets our CausalLMOutputWithPast back, then crashes on .image_hidden_states.
+    vlm   = getattr(getattr(model, "base_model", model), "model", model)
+    inner = getattr(vlm, "model", vlm)   # Mistral3Model (or same obj for plain CausalLMs)
+
     vt = getattr(inner, "vision_tower", None)
     if vt is not None:
         vt.requires_grad_(False)
         print(f"  Frozen vision tower ({sum(p.numel() for p in vt.parameters())/1e6:.1f}M params)")
 
-    # For VLMs, the outer forward (Mistral3ForConditionalGeneration) doesn't properly
-    # compute a differentiable loss for text-only inputs. Patch it to delegate directly
-    # to language_model, which is MistralForCausalLM and handles labels correctly.
     lm = getattr(inner, "language_model", None)
     if lm is not None:
         import types
         def _text_forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
             return lm(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        inner.forward = types.MethodType(_text_forward, inner)
-        print(f"  Patched {type(inner).__name__}.forward → language_model for text-only training")
+        vlm.forward = types.MethodType(_text_forward, vlm)
+        print(f"  Patched {type(vlm).__name__}.forward → language_model for text-only training")
 
     return model
 
