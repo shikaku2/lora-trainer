@@ -229,13 +229,29 @@ def apply_lora(model, rank: int):
         vt.requires_grad_(False)
         print(f"  Frozen vision tower ({sum(p.numel() for p in vt.parameters())/1e6:.1f}M params)")
 
-    lm = getattr(inner, "language_model", None)
-    if lm is not None:
+    # inner.language_model is MistralModel (base transformer — no lm_head, no loss).
+    # lm_head is on vlm (Mistral3ForConditionalGeneration) itself.
+    # We call language_model → lm_head → cross-entropy, returning a proper CausalLMOutputWithPast.
+    lm      = getattr(inner, "language_model", None)
+    lm_head = getattr(vlm,   "lm_head",        None)
+    if lm is not None and lm_head is not None:
         import types
+        from transformers.modeling_outputs import CausalLMOutputWithPast
         def _text_forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
-            return lm(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            hidden = lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+            logits = lm_head(hidden)
+            loss = None
+            if labels is not None:
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                loss = torch.nn.functional.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                    ignore_index=-100,
+                )
+            return CausalLMOutputWithPast(loss=loss, logits=logits)
         vlm.forward = types.MethodType(_text_forward, vlm)
-        print(f"  Patched {type(vlm).__name__}.forward → language_model for text-only training")
+        print(f"  Patched {type(vlm).__name__}.forward → language_model + lm_head for text-only training")
 
     return model
 
