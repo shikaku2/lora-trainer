@@ -301,45 +301,8 @@ except Exception as e:
     sys.exit(1)
 
 # ----------------------------------------------------------------
-# Create network volume (fresh) or reuse existing (restart)
+# Build pod environment (used for both fresh and restart paths)
 # ----------------------------------------------------------------
-volume_id   = None
-fresh_volume = False
-
-if state:
-    volume_id = state["volume_id"]
-    old_pod_id = state["pod_id"]
-    print(f"\nTerminating old pod {old_pod_id}...")
-    try:
-        _rp.terminate_pod(old_pod_id)
-        time.sleep(5)
-        print(f"  Terminated.")
-    except Exception as e:
-        print(f"  Warning: {e} (pod may already be gone)")
-    print(f"Reusing network volume {volume_id}.")
-else:
-    print(f"\nCreating network volume ({volume_size_gb} GB in {datacenter_id})...")
-    try:
-        vol = _rp.create_network_volume(
-            name=f"lora-vol-{int(time.time())}",
-            size=volume_size_gb,
-            datacenter_id=datacenter_id,
-        )
-        volume_id = vol["id"]
-        fresh_volume = True
-        print(f"  Volume created: {volume_id}")
-    except Exception as e:
-        print(f"ERROR: Failed to create network volume: {e}")
-        try:
-            HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
-        except Exception:
-            pass
-        sys.exit(1)
-
-# ----------------------------------------------------------------
-# Create RunPod pod
-# ----------------------------------------------------------------
-print(f"\nCreating RunPod pod ({gpu_type}, {docker_image})...")
 pod_env = {
     "HF_TOKEN":           hf_token,
     "HF_WRITE_TOKEN":     hf_token,
@@ -360,39 +323,93 @@ pod_env = {
        if "CUDA_LAUNCH_BLOCKING" in os.environ else {}),
 }
 
-try:
-    pod = _rp.create_pod(
-        name=f"lora-training-{int(time.time())}",
-        image_name=docker_image,
-        gpu_type_id=gpu_type,
-        cloud_type="SECURE",
-        gpu_count=1,
-        container_disk_in_gb=container_disk_gb,
-        network_volume_id=volume_id,
-        env=pod_env,
-        ports=None,
-        support_public_ip=False,
+# ----------------------------------------------------------------
+# Create pod (fresh) or patch + resume existing pod (restart)
+# ----------------------------------------------------------------
+if state:
+    # ── Restart: patch existing pod with latest image + updated env, then resume ──
+    pod_id    = state["pod_id"]
+    volume_id = state["volume_id"]
+    print(f"\nPatching pod {pod_id} with latest image ({docker_image})...")
+    patch_body = json.dumps({"imageName": docker_image, "env": pod_env}).encode()
+    patch_req = urllib.request.Request(
+        f"https://rest.runpod.io/v1/pods/{pod_id}",
+        data=patch_body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        },
+        method="PATCH",
     )
-    pod_id = pod["id"]
-    print(f"  Pod created: {pod_id}")
-    print(f"  Dashboard:   https://www.runpod.io/console/pods/{pod_id}")
-except Exception as e:
-    print(f"ERROR: Failed to create pod: {e}")
     try:
-        HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
-    except Exception:
-        pass
-    if fresh_volume and volume_id:
+        with urllib.request.urlopen(patch_req, timeout=30) as r:
+            r.read()
+        print(f"  Pod patched.")
+    except urllib.error.HTTPError as e:
+        print(f"ERROR: Failed to patch pod {pod_id}: HTTP {e.code}: {e.read().decode()}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Failed to patch pod {pod_id}: {e}")
+        sys.exit(1)
+    try:
+        _rp.resume_pod(pod_id, gpu_count=1)
+        print(f"  Pod {pod_id} resumed.")
+    except Exception as e:
+        print(f"ERROR: Failed to resume pod: {e}")
+        sys.exit(1)
+else:
+    # ── Fresh run: create network volume + pod ──
+    print(f"\nCreating network volume ({volume_size_gb} GB in {datacenter_id})...")
+    volume_id = None
+    try:
+        vol = _rp.create_network_volume(
+            name=f"lora-vol-{int(time.time())}",
+            size=volume_size_gb,
+            datacenter_id=datacenter_id,
+        )
+        volume_id = vol["id"]
+        print(f"  Volume created: {volume_id}")
+    except Exception as e:
+        print(f"ERROR: Failed to create network volume: {e}")
+        try:
+            HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
+        except Exception:
+            pass
+        sys.exit(1)
+
+    print(f"\nCreating RunPod pod ({gpu_type}, {docker_image})...")
+    try:
+        pod = _rp.create_pod(
+            name=f"lora-training-{int(time.time())}",
+            image_name=docker_image,
+            gpu_type_id=gpu_type,
+            cloud_type="SECURE",
+            gpu_count=1,
+            container_disk_in_gb=container_disk_gb,
+            network_volume_id=volume_id,
+            env=pod_env,
+            ports=None,
+            support_public_ip=False,
+        )
+        pod_id = pod["id"]
+        print(f"  Pod created: {pod_id}")
+    except Exception as e:
+        print(f"ERROR: Failed to create pod: {e}")
+        try:
+            HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
+        except Exception:
+            pass
         try:
             _rp.delete_network_volume(volume_id)
             print(f"  Cleaned up network volume {volume_id}")
         except Exception:
             pass
-    sys.exit(1)
+        sys.exit(1)
 
 # Save state immediately so we can recover on interrupt or failure
 save_state({"pod_id": pod_id, "volume_id": volume_id})
 print(f"  State saved to {STATE_FILE}  (rerun this script to retry on failure)")
+print(f"  Dashboard:   https://www.runpod.io/console/pods/{pod_id}")
 
 # ----------------------------------------------------------------
 # Poll until pod terminates or pauses
