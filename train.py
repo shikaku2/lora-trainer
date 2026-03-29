@@ -190,6 +190,17 @@ def gpu_check():
 
 
 def apply_lora(model, rank: int):
+    # Unsloth's custom GC patches decoder layers assuming a flat CausalLM structure.
+    # For VLMs (e.g. Mistral3ForConditionalGeneration) the decoder lives inside a wrapper
+    # (.language_model), so the custom GC breaks the computation graph and causes
+    # "does not require grad" on the loss. Use standard PyTorch GC for VLMs instead.
+    model_type = getattr(getattr(model, "config", None), "model_type", "")
+    is_vlm = ("ConditionalGeneration" in type(model).__name__
+              or model_type in ("mistral3", "llava", "pixtral", "idefics"))
+    gc = True if is_vlm else "unsloth"
+    if is_vlm:
+        print(f"  VLM detected ({type(model).__name__}) — using standard gradient checkpointing")
+
     model = FastLanguageModel.get_peft_model(
         model,
         r=rank,
@@ -198,11 +209,10 @@ def apply_lora(model, rank: int):
                         "gate_proj", "up_proj", "down_proj"],
         lora_dropout=0,
         bias="none",
-        use_gradient_checkpointing="unsloth",
+        use_gradient_checkpointing=gc,
     )
-    # Vision-language models (e.g. Mistral3ForConditionalGeneration) have a vision tower that
-    # unsloth may force to require_grad. Text-only batches never activate it, which disconnects
-    # the loss from the computation graph and causes "does not require grad" crashes.
+    # Freeze vision tower — text-only batches never activate it, so leaving it trainable
+    # disconnects the loss from the computation graph.
     inner = getattr(getattr(getattr(model, "base_model", model), "model", model), "model", model)
     vt = getattr(inner, "vision_tower", None)
     if vt is not None:
