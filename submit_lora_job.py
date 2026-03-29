@@ -368,11 +368,11 @@ else:
     print(f"\nCreating network volume ({volume_size_gb} GB in {datacenter_id})...")
     volume_id = None
     try:
-        vol = _rp.create_network_volume(
-            name=f"lora-vol-{int(time.time())}",
-            size=volume_size_gb,
-            datacenter_id=datacenter_id,
-        )
+        vol = _rest("POST", "/networkvolumes", {
+            "name":         f"lora-vol-{int(time.time())}",
+            "size":         volume_size_gb,
+            "dataCenterId": datacenter_id,
+        })
         volume_id = vol["id"]
         print(f"  Volume created: {volume_id}")
     except Exception as e:
