@@ -164,15 +164,16 @@ def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
     if torch.cuda.is_available() and torch.cuda.device_count() > 0:
         print(f"  CUDA device 0: {torch.cuda.get_device_name(0)}")
         print(f"  CUDA device 0 memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-    # Resolve to local cache path so we can patch tokenizer_config.json before unsloth loads it
-    local_path = model_path
-    if not os.path.isdir(model_path):
+    # Resolve to local cache path only to patch tokenizer_config.json — pass the original
+    # model_path (HF repo ID) to FastLanguageModel so adapters record the correct base_model.
+    local_path = model_path if os.path.isdir(model_path) else None
+    if local_path is None:
         from huggingface_hub import snapshot_download
         token = os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
         local_path = snapshot_download(model_path, token=token)
     _patch_tokenizer_config(local_path)
     model, _ = FastLanguageModel.from_pretrained(
-        model_name=local_path,
+        model_name=model_path,
         max_seq_length=max_seq_len,
         dtype=None,
         load_in_4bit=use_4bit,
