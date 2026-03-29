@@ -39,6 +39,7 @@ Optional env vars (with defaults):
   FORCE_DPO       re-run DPO even if cached        [0]
 """
 
+import base64
 import json
 import os
 import re
