@@ -189,16 +189,75 @@ def gpu_check():
     print(f"PyTorch: {torch.__version__}  Device: {torch.cuda.get_device_name(0)}")
 
 
-def apply_lora(model, rank: int):
-    # Unsloth's custom GC patches decoder layers assuming a flat CausalLM structure.
-    # For VLMs (e.g. Mistral3ForConditionalGeneration) the decoder lives inside a wrapper
-    # (.language_model), so the custom GC breaks the computation graph and causes
-    # "does not require grad" on the loss. Use standard PyTorch GC for VLMs instead.
+def _is_vlm(model) -> bool:
+    """Return True if model (raw or PEFT-wrapped) is a vision-language model."""
+    # Check the unwrapped base class
+    base = getattr(getattr(model, "base_model", model), "model", model)
     model_type = getattr(getattr(model, "config", None), "model_type", "")
-    is_vlm = ("ConditionalGeneration" in type(model).__name__
-              or model_type in ("mistral3", "llava", "pixtral", "idefics"))
-    gc = True if is_vlm else "unsloth"
-    if is_vlm:
+    return ("ConditionalGeneration" in type(base).__name__
+            or model_type in ("mistral3", "llava", "pixtral", "idefics"))
+
+
+def _patch_vlm(model) -> None:
+    """
+    For PEFT-wrapped VLMs, patch the outer forward to route text-only training through
+    language_model + lm_head directly, bypassing the unsloth-compiled VLM wrapper.
+
+    Model hierarchy (after get_peft_model / from_pretrained):
+      model (PeftModel)
+        └── .base_model (LoraModel)
+              └── .model  =: vlm   (Mistral3ForConditionalGeneration)
+                    └── .model  =: inner  (Mistral3Model)
+                          ├── .language_model  (MistralModel — base transformer, no lm_head)
+                          └── .vision_tower
+
+    PEFT calls vlm.forward() directly. We must patch at that level so the
+    unsloth-compiled Mistral3ForConditionalGeneration_forward never runs.
+    """
+    import types
+    from transformers.modeling_outputs import CausalLMOutputWithPast
+
+    vlm   = getattr(getattr(model, "base_model", model), "model", model)
+    inner = getattr(vlm, "model", vlm)
+
+    vt = getattr(inner, "vision_tower", None)
+    if vt is not None:
+        vt.requires_grad_(False)
+        print(f"  Frozen vision tower ({sum(p.numel() for p in vt.parameters())/1e6:.1f}M params)")
+
+    lm      = getattr(inner, "language_model", None)
+    lm_head = getattr(vlm,   "lm_head",        None)
+    if lm is None or lm_head is None:
+        print(f"  WARNING: VLM detected but language_model/lm_head not found — skipping forward patch")
+        return
+
+    def _text_forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+        # requires_grad_(True) on the embedding output ensures PyTorch's gradient
+        # checkpointing builds a backward graph even though input_ids are integers.
+        embeds = lm.embed_tokens(input_ids).requires_grad_(True)
+        hidden = lm(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
+        logits = lm_head(hidden)
+        loss = None
+        if labels is not None:
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss = torch.nn.functional.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+        return CausalLMOutputWithPast(loss=loss, logits=logits)
+
+    vlm.forward = types.MethodType(_text_forward, vlm)
+    print(f"  Patched {type(vlm).__name__}.forward → language_model + lm_head for text-only training")
+
+
+def apply_lora(model, rank: int):
+    # Unsloth's custom GC assumes a flat CausalLM structure. For VLMs the decoder
+    # lives inside a wrapper (.language_model), so use standard PyTorch GC instead.
+    vlm_model = _is_vlm(model)
+    gc = True if vlm_model else "unsloth"
+    if vlm_model:
         print(f"  VLM detected ({type(model).__name__}) — using standard gradient checkpointing")
 
     model = FastLanguageModel.get_peft_model(
@@ -212,49 +271,8 @@ def apply_lora(model, rank: int):
         use_gradient_checkpointing=gc,
     )
 
-    # After get_peft_model the hierarchy is:
-    #   model (PeftModel) → .base_model (LoraModel) → .model (Mistral3ForConditionalGeneration)
-    #                                                         → .model (Mistral3Model)
-    #                                                                  → .language_model (MistralForCausalLM)
-    #                                                                  → .vision_tower
-    #
-    # PEFT calls vlm.forward() directly. We must patch at that level — patching inner.forward
-    # (Mistral3Model) is too deep: the unsloth-compiled Mistral3ForConditionalGeneration_forward
-    # runs first, gets our CausalLMOutputWithPast back, then crashes on .image_hidden_states.
-    vlm   = getattr(getattr(model, "base_model", model), "model", model)
-    inner = getattr(vlm, "model", vlm)   # Mistral3Model (or same obj for plain CausalLMs)
-
-    vt = getattr(inner, "vision_tower", None)
-    if vt is not None:
-        vt.requires_grad_(False)
-        print(f"  Frozen vision tower ({sum(p.numel() for p in vt.parameters())/1e6:.1f}M params)")
-
-    # inner.language_model is MistralModel (base transformer — no lm_head, no loss).
-    # lm_head is on vlm (Mistral3ForConditionalGeneration) itself.
-    # We call language_model → lm_head → cross-entropy, returning a proper CausalLMOutputWithPast.
-    lm      = getattr(inner, "language_model", None)
-    lm_head = getattr(vlm,   "lm_head",        None)
-    if lm is not None and lm_head is not None:
-        import types
-        from transformers.modeling_outputs import CausalLMOutputWithPast
-        def _text_forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
-            # Force requires_grad on the embedding output so PyTorch's checkpoint
-            # implementation builds a backward graph even though input_ids are integers.
-            embeds = lm.embed_tokens(input_ids).requires_grad_(True)
-            hidden = lm(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
-            logits = lm_head(hidden)
-            loss = None
-            if labels is not None:
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
-                loss = torch.nn.functional.cross_entropy(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1),
-                    ignore_index=-100,
-                )
-            return CausalLMOutputWithPast(loss=loss, logits=logits)
-        vlm.forward = types.MethodType(_text_forward, vlm)
-        print(f"  Patched {type(vlm).__name__}.forward → language_model + lm_head for text-only training")
+    if vlm_model:
+        _patch_vlm(model)
 
     return model
 
