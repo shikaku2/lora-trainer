@@ -2,8 +2,16 @@
 """
 submit_lora_job.py — submit a full CPT→QLoRA→DPO training run as a RunPod pod.
 
-Uploads training files to a temporary private HF repo, creates a RunPod pod
-that runs the full pipeline, polls until the pod terminates, then reports.
+Uploads training files to a temporary private HF repo, creates a RunPod pod with
+a persistent network volume (so the base model survives pod restarts), polls until
+done, then cleans everything up.
+
+On failure the pod is paused (not deleted) and state is written to .lora_trainer.state.
+Run the script again to restart: a fresh pod is created from the latest Docker image,
+the existing network volume (with the model already downloaded) is reused, and training
+resumes from whatever HF checkpoints were uploaded before the failure.
+
+To abandon a failed run and start completely fresh, delete .lora_trainer.state.
 
 Usage:
   RUNPOD_API_KEY=rp_xxx HF_WRITE_TOKEN=hf_xxx python3 submit_lora_job.py
@@ -20,6 +28,7 @@ Optional env vars (with defaults):
   MODEL_PATH      base model HF repo or local path [unsloth/Magistral-Small-2509]
   DOCKER_IMAGE    pod container image              [ghcr.io/shikaku2/lora-trainer:latest]
   GPU_TYPE        RunPod GPU type ID               [NVIDIA A40]
+  DATACENTER_ID   RunPod datacenter for network volume  [US-TX-3]
   EPOCHS_CPT      CPT epochs                       [1]
   EPOCHS_LORA     QLoRA epochs                     [3]
   EPOCHS_DPO      DPO epochs                       [1]
@@ -42,6 +51,22 @@ import urllib.request
 from pathlib import Path
 
 from huggingface_hub import HfApi
+
+STATE_FILE = Path(".lora_trainer.state")
+
+
+def load_state():
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())
+    return None
+
+
+def save_state(data):
+    STATE_FILE.write_text(json.dumps(data, indent=2))
+
+
+def clear_state():
+    STATE_FILE.unlink(missing_ok=True)
 
 
 def estimate_disk_gb(model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank):
@@ -144,26 +169,39 @@ def parse_lora_examples(text_path: str) -> bytes:
 # ----------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------
-api_key      = env("RUNPOD_API_KEY",  required=True)
-hf_token     = env("HF_WRITE_TOKEN",  required=True)
+api_key       = env("RUNPOD_API_KEY",  required=True)
+hf_token      = env("HF_WRITE_TOKEN",  required=True)
 
-cpt_file     = env("CPT_FILE",   "cpt.txt")
-lora_file    = env("LORA_FILE",  "lora.txt")
-dpo_file     = env("DPO_FILE",   "dpo.jsonl")
-hf_repo      = env("HF_REPO",   "shikaku2/magistral-alastor-lora")
-model_path   = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
-docker_image = env("DOCKER_IMAGE", "ghcr.io/shikaku2/lora-trainer:latest")
-gpu_type     = env("GPU_TYPE",   "NVIDIA A40")
-max_seq_len  = int(env("MAX_SEQ_LEN",  "2048"))
-epochs_cpt   = int(env("EPOCHS_CPT",   "1"))
-epochs_lora  = int(env("EPOCHS_LORA",  "3"))
-epochs_dpo   = int(env("EPOCHS_DPO",   "1"))
-rank         = int(env("RANK",         "16"))
-force_cpt    = env("FORCE_CPT",   "0") == "1"
-force_qlora  = env("FORCE_QLORA", "0") == "1"
-force_dpo    = env("FORCE_DPO",   "0") == "1"
+cpt_file      = env("CPT_FILE",   "cpt.txt")
+lora_file     = env("LORA_FILE",  "lora.txt")
+dpo_file      = env("DPO_FILE",   "dpo.jsonl")
+hf_repo       = env("HF_REPO",   "shikaku2/magistral-alastor-lora")
+model_path    = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
+docker_image  = env("DOCKER_IMAGE", "ghcr.io/shikaku2/lora-trainer:latest")
+gpu_type      = env("GPU_TYPE",   "NVIDIA A40")
+datacenter_id = env("DATACENTER_ID", "US-TX-3")
+max_seq_len   = int(env("MAX_SEQ_LEN",  "2048"))
+epochs_cpt    = int(env("EPOCHS_CPT",   "1"))
+epochs_lora   = int(env("EPOCHS_LORA",  "3"))
+epochs_dpo    = int(env("EPOCHS_DPO",   "1"))
+rank          = int(env("RANK",         "16"))
+force_cpt     = env("FORCE_CPT",   "0") == "1"
+force_qlora   = env("FORCE_QLORA", "0") == "1"
+force_dpo     = env("FORCE_DPO",   "0") == "1"
 
 training_data_repo = f"{hf_repo}-training-data"
+
+import runpod as _rp
+_rp.api_key = api_key
+
+# ----------------------------------------------------------------
+# Check for existing state (restart mode)
+# ----------------------------------------------------------------
+state = load_state()
+if state:
+    print(f"\nFound {STATE_FILE} — resuming from previous run")
+    print(f"  Existing volume: {state['volume_id']}  (model already downloaded)")
+    print(f"  Old pod {state['pod_id']} will be terminated and replaced with fresh image")
 
 # ----------------------------------------------------------------
 # Preflight: verify HF token
@@ -220,16 +258,20 @@ print("\nEstimating disk requirements...")
 model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb = estimate_disk_gb(
     model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank,
 )
-container_disk_gb = max(30, int(total_gb * 1.25) + 5)
+# Network volume: model weights + HF cache overhead (persists across restarts)
+# Container disk: OS + conda packages + /tmp adapter outputs (ephemeral per pod)
+volume_size_gb    = max(60, int(model_gb * 1.15) + 5)
+container_disk_gb = 30
+
 if model_gb:
     print(f"  Model weights:  {model_gb:.1f} GB")
 else:
     print(f"  Model weights:  unknown (local path or HF query failed)")
 print(f"  LoRA adapters:  {adapters_gb:.2f} GB  (3 stages × {adapter_gb_each:.2f} GB, rank {rank})")
 print(f"  Dataset caches: {data_gb * 1000:.1f} MB")
-print(f"  Overhead:       3.0 GB")
 print(f"  ──────────────────────────────────────────")
-print(f"  Estimated total {total_gb:.1f} GB  →  allocating {container_disk_gb} GB (25% buffer)")
+print(f"  Network volume: {volume_size_gb} GB  (model + HF cache, persists across restarts)")
+print(f"  Container disk: {container_disk_gb} GB  (OS, packages, temp adapter files)")
 
 # ----------------------------------------------------------------
 # Upload training files to temporary HF repo
@@ -258,40 +300,74 @@ except Exception as e:
     sys.exit(1)
 
 # ----------------------------------------------------------------
+# Create network volume (fresh) or reuse existing (restart)
+# ----------------------------------------------------------------
+volume_id   = None
+fresh_volume = False
+
+if state:
+    volume_id = state["volume_id"]
+    old_pod_id = state["pod_id"]
+    print(f"\nTerminating old pod {old_pod_id}...")
+    try:
+        _rp.terminate_pod(old_pod_id)
+        time.sleep(5)
+        print(f"  Terminated.")
+    except Exception as e:
+        print(f"  Warning: {e} (pod may already be gone)")
+    print(f"Reusing network volume {volume_id}.")
+else:
+    print(f"\nCreating network volume ({volume_size_gb} GB in {datacenter_id})...")
+    try:
+        vol = _rp.create_network_volume(
+            name=f"lora-vol-{int(time.time())}",
+            size=volume_size_gb,
+            datacenter_id=datacenter_id,
+        )
+        volume_id = vol["id"]
+        fresh_volume = True
+        print(f"  Volume created: {volume_id}")
+    except Exception as e:
+        print(f"ERROR: Failed to create network volume: {e}")
+        try:
+            HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
+        except Exception:
+            pass
+        sys.exit(1)
+
+# ----------------------------------------------------------------
 # Create RunPod pod
 # ----------------------------------------------------------------
 print(f"\nCreating RunPod pod ({gpu_type}, {docker_image})...")
+pod_env = {
+    "HF_TOKEN":           hf_token,
+    "HF_WRITE_TOKEN":     hf_token,
+    "HF_REPO":            hf_repo,
+    "TRAINING_DATA_REPO": training_data_repo,
+    "MODEL_PATH":         model_path,
+    "RUNPOD_API_KEY":     api_key,
+    "EPOCHS_CPT":         str(epochs_cpt),
+    "EPOCHS_LORA":        str(epochs_lora),
+    "EPOCHS_DPO":         str(epochs_dpo),
+    "RANK":               str(rank),
+    "MAX_SEQ_LEN":        str(max_seq_len),
+    "FORCE_CPT":          "1" if force_cpt  else "0",
+    "FORCE_QLORA":        "1" if force_qlora else "0",
+    "FORCE_DPO":          "1" if force_dpo   else "0",
+    "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    **({ "CUDA_LAUNCH_BLOCKING": os.environ["CUDA_LAUNCH_BLOCKING"] }
+       if "CUDA_LAUNCH_BLOCKING" in os.environ else {}),
+}
+
 try:
-    import runpod
-    runpod.api_key = api_key
-
-    pod_env = {
-        "HF_TOKEN":           hf_token,
-        "HF_WRITE_TOKEN":     hf_token,
-        "HF_REPO":            hf_repo,
-        "TRAINING_DATA_REPO": training_data_repo,
-        "MODEL_PATH":         model_path,
-        "RUNPOD_API_KEY":     api_key,
-        "EPOCHS_CPT":         str(epochs_cpt),
-        "EPOCHS_LORA":        str(epochs_lora),
-        "EPOCHS_DPO":         str(epochs_dpo),
-        "RANK":               str(rank),
-        "MAX_SEQ_LEN":        str(max_seq_len),
-        "FORCE_CPT":          "1" if force_cpt  else "0",
-        "FORCE_QLORA":        "1" if force_qlora else "0",
-        "FORCE_DPO":          "1" if force_dpo   else "0",
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-        **({ "CUDA_LAUNCH_BLOCKING": os.environ["CUDA_LAUNCH_BLOCKING"] }
-           if "CUDA_LAUNCH_BLOCKING" in os.environ else {}),
-    }
-
-    pod = runpod.create_pod(
+    pod = _rp.create_pod(
         name=f"lora-training-{int(time.time())}",
         image_name=docker_image,
         gpu_type_id=gpu_type,
         cloud_type="SECURE",
         gpu_count=1,
         container_disk_in_gb=container_disk_gb,
+        network_volume_id=volume_id,
         env=pod_env,
         ports=None,
         support_public_ip=False,
@@ -301,24 +377,33 @@ try:
     print(f"  Dashboard:   https://www.runpod.io/console/pods/{pod_id}")
 except Exception as e:
     print(f"ERROR: Failed to create pod: {e}")
-    # Clean up training data repo
     try:
         HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
     except Exception:
         pass
+    if fresh_volume and volume_id:
+        try:
+            _rp.delete_network_volume(volume_id)
+            print(f"  Cleaned up network volume {volume_id}")
+        except Exception:
+            pass
     sys.exit(1)
 
+# Save state immediately so we can recover on interrupt or failure
+save_state({"pod_id": pod_id, "volume_id": volume_id})
+print(f"  State saved to {STATE_FILE}  (rerun this script to retry on failure)")
+
 # ----------------------------------------------------------------
-# Poll until pod terminates
+# Poll until pod terminates or pauses
 # ----------------------------------------------------------------
-print("\nWaiting for pod to complete (pod self-terminates when done)...")
+print("\nWaiting for pod to complete...")
 start = time.time()
 last_status = None
 while True:
     time.sleep(20)
     elapsed = int(time.time() - start)
     try:
-        pod_info = runpod.get_pod(pod_id)
+        pod_info = _rp.get_pod(pod_id)
         if pod_info is None:
             print(f"\n[{elapsed:5d}s] Pod terminated (no longer found)")
             break
@@ -339,6 +424,7 @@ while True:
 # Check result via HF
 # ----------------------------------------------------------------
 print(f"\nChecking HuggingFace repo for results...")
+success = False
 try:
     api = HfApi(token=hf_token)
 
@@ -359,17 +445,34 @@ try:
             print(f.read())
         api.delete_file("pod_error.log", repo_id=hf_repo, repo_type="model",
                         commit_message="remove error log")
-        sys.exit(1)
-
-    has_adapter = any("adapter_model" in f for f in files)
-    if has_adapter:
+    elif any("adapter_model" in f for f in files):
         print(f"  Adapter found at https://huggingface.co/{hf_repo}")
         print("  Training complete!")
+        success = True
     else:
-        print(f"  No adapter found in {hf_repo} — training may have failed.")
-        print(f"  Check pod logs at https://www.runpod.io/console/pods/{pod_id}")
-        sys.exit(1)
-except SystemExit:
-    raise
+        print(f"  No adapter found in {hf_repo} — training may have failed silently.")
 except Exception as e:
     print(f"  Could not check HF repo: {e}")
+
+# ----------------------------------------------------------------
+# Cleanup on success / instructions on failure
+# ----------------------------------------------------------------
+if success:
+    print("\nCleaning up...")
+    try:
+        _rp.terminate_pod(pod_id)
+        print(f"  Pod {pod_id} terminated.")
+    except Exception as e:
+        print(f"  Pod {pod_id} already gone ({e}).")
+    try:
+        _rp.delete_network_volume(volume_id)
+        print(f"  Network volume {volume_id} deleted.")
+    except Exception as e:
+        print(f"  Warning: could not delete volume {volume_id}: {e}")
+    clear_state()
+    print(f"  {STATE_FILE} cleared.")
+else:
+    print(f"\n  Pod is paused. Network volume {volume_id} preserved.")
+    print(f"  Rerun this script to retry with the latest Docker image.")
+    print(f"  To start completely fresh: rm {STATE_FILE}")
+    sys.exit(1)
