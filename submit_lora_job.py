@@ -200,8 +200,9 @@ _rp.api_key = api_key
 state = load_state()
 if state:
     print(f"\nFound {STATE_FILE} — resuming from previous run")
+    print(f"  Existing pod:    {state['pod_id']}")
     print(f"  Existing volume: {state['volume_id']}  (model already downloaded)")
-    print(f"  Old pod {state['pod_id']} will be terminated and replaced with fresh image")
+    print(f"  Will patch pod with latest image and resume on same machine")
 
 # ----------------------------------------------------------------
 # Preflight: verify HF token
