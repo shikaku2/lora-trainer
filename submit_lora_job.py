@@ -194,6 +194,23 @@ training_data_repo = f"{hf_repo}-training-data"
 import runpod as _rp
 _rp.api_key = api_key
 
+RUNPOD_REST = "https://rest.runpod.io/v1"
+
+
+def _rest(method: str, path: str, body=None):
+    """Make a RunPod REST API call. Returns parsed JSON response."""
+    req = urllib.request.Request(
+        f"{RUNPOD_REST}{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        },
+        method=method,
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
 # ----------------------------------------------------------------
 # Check for existing state (restart mode)
 # ----------------------------------------------------------------
