@@ -98,13 +98,13 @@ def parse_lora_examples(text_path: str) -> bytes:
         USER: user message
         REPLY: possibly
                multi-line reply
-        =====
+        ---
 
     If a SYSTEM block is present it is injected into every [INST] block.
     Output: one {"text": "[INST] SYSTEM\\n\\nUSER [/INST] REPLY"} per line.
     """
     text = Path(text_path).read_text()
-    blocks = re.split(r"\n=====\n?", text)
+    blocks = re.split(r"\n(?:=====|---)\n?", text)
 
     system_prompt = ""
     lines = []
