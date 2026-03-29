@@ -492,7 +492,7 @@ if success:
     except Exception as e:
         print(f"  Pod {pod_id} already gone ({e}).")
     try:
-        _rp.delete_network_volume(volume_id)
+        _rest("DELETE", f"/networkvolumes/{volume_id}")
         print(f"  Network volume {volume_id} deleted.")
     except Exception as e:
         print(f"  Warning: could not delete volume {volume_id}: {e}")
