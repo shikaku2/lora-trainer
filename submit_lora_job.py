@@ -535,15 +535,9 @@ if success:
         print(f"  Pod {pod_id} terminated.")
     except Exception as e:
         print(f"  Pod {pod_id} already gone ({e}).")
-    try:
-        _rest("DELETE", f"/networkvolumes/{volume_id}")
-        print(f"  Network volume {volume_id} deleted.")
-    except Exception as e:
-        print(f"  Warning: could not delete volume {volume_id}: {e}")
     clear_state()
     print(f"  {STATE_FILE} cleared.")
 else:
-    print(f"\n  Pod is paused. Network volume {volume_id} preserved.")
-    print(f"  Rerun this script to retry with the latest Docker image.")
+    print(f"\n  Pod is paused. Rerun this script to retry with the latest Docker image.")
     print(f"  To start completely fresh: rm {STATE_FILE}")
     sys.exit(1)
