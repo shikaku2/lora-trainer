@@ -284,8 +284,7 @@ def resolve_image_digest(image: str, gh_token: str = "") -> str:
 state = load_state()
 if state:
     print(f"\nFound {STATE_FILE} — resuming from previous run")
-    print(f"  Existing pod:    {state['pod_id']}")
-    print(f"  Existing volume: {state['volume_id']}  (model already downloaded)")
+    print(f"  Existing pod: {state['pod_id']}")
     print(f"  Will patch pod with latest image and resume on same machine")
 
 # ----------------------------------------------------------------
