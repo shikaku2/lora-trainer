@@ -487,16 +487,19 @@ def cmd_dpo(args):
     )
     FastLanguageModel.for_training(model)
 
-    # Unsloth sets forward as an INSTANCE attribute on the MistralModel object, so
-    # class-level patches are shadowed. Patch the instance directly.
-    # model → PeftModel → .base_model (LoraModel) → .model (MistralForCausalLM) → .model (MistralModel)
-    _mistral_model = model.base_model.model.model
-    _orig_mistral_fwd = _mistral_model.forward
-    def _safe_mistral_fwd(*args, **kwargs):
-        _mistral_model._has_no_labels = False
-        return _orig_mistral_fwd(*args, **kwargs)
-    _mistral_model.forward = _safe_mistral_fwd
-    print(f"  Patched {type(_mistral_model).__name__} instance forward (disable _has_no_labels)")
+    if _is_vlm(model):
+        _patch_vlm(model)
+    else:
+        # For non-VLM Mistral models, unsloth sets _has_no_labels=True during DPO
+        # (which has no labels), causing it to skip loss. Patch the instance forward
+        # to reset it before each call.
+        _inner = model.base_model.model.model
+        _orig_fwd = _inner.forward
+        def _safe_fwd(*args, **kwargs):
+            _inner._has_no_labels = False
+            return _orig_fwd(*args, **kwargs)
+        _inner.forward = _safe_fwd
+        print(f"  Patched {type(_inner).__name__} instance forward (disable _has_no_labels)")
 
     model.print_trainable_parameters()
 
