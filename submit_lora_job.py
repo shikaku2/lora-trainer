@@ -461,11 +461,13 @@ else:
             pass
         sys.exit(1)
 
-    print(f"\nCreating RunPod pod ({gpu_type}, {docker_image})...")
+    gh_token = os.environ.get("GH_TOKEN", "")
+    pinned   = resolve_image_digest(docker_image, gh_token)
+    print(f"\nCreating RunPod pod ({gpu_type}, {pinned})...")
     try:
         pod = _rp.create_pod(
             name=f"lora-training-{int(time.time())}",
-            image_name=docker_image,
+            image_name=pinned,
             gpu_type_id=gpu_type,
             cloud_type="SECURE",
             gpu_count=1,
