@@ -133,7 +133,14 @@ class SimpleCollator:
 
 
 def _patch_tokenizer_config(model_dir: str):
-    """Remove tokenizer_class values that transformers cannot resolve (e.g. 'TokenizersBackend' from merges)."""
+    """
+    Fix tokenizer_config.json for models with broken tokenizer_class values.
+
+    - 'TokenizersBackend': not a real transformers class (artifact of some merge tools)
+    - 'MistralCommonTokenizer': rejects _from_auto/_commit_hash kwargs injected by AutoTokenizer
+    Both are replaced with LlamaTokenizerFast, which reads tokenizer.json and works correctly
+    for Mistral-family models.
+    """
     import json
     cfg_path = os.path.join(model_dir, "tokenizer_config.json")
     if not os.path.exists(cfg_path):
@@ -141,14 +148,13 @@ def _patch_tokenizer_config(model_dir: str):
     with open(cfg_path) as f:
         cfg = json.load(f)
     tok_class = cfg.get("tokenizer_class", "")
-    if not tok_class:
+    broken = {"TokenizersBackend", "MistralCommonTokenizer"}
+    if tok_class not in broken:
         return
-    import transformers
-    if not hasattr(transformers, tok_class):
-        print(f"  Removing unresolvable tokenizer_class={tok_class!r} from tokenizer_config.json")
-        del cfg["tokenizer_class"]
-        with open(cfg_path, "w") as f:
-            json.dump(cfg, f, indent=2)
+    print(f"  Replacing tokenizer_class={tok_class!r} with LlamaTokenizerFast in tokenizer_config.json")
+    cfg["tokenizer_class"] = "LlamaTokenizerFast"
+    with open(cfg_path, "w") as f:
+        json.dump(cfg, f, indent=2)
 
 
 def load_model(model_path: str, use_4bit: bool, max_seq_len: int):
