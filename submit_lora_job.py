@@ -407,9 +407,8 @@ pod_env = {
 # ----------------------------------------------------------------
 if state:
     # ── Restart: patch existing pod with latest image + updated env, then resume ──
-    pod_id    = state["pod_id"]
-    volume_id = state["volume_id"]
-    gh_token  = os.environ.get("GH_TOKEN", "")
+    pod_id   = state["pod_id"]
+    gh_token = os.environ.get("GH_TOKEN", "")
     pinned    = resolve_image_digest(docker_image, gh_token)
     if pinned != docker_image:
         print(f"\nPatching pod {pod_id} with {pinned}...")
