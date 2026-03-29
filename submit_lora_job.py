@@ -460,7 +460,7 @@ else:
         sys.exit(1)
 
 # Save state immediately so we can recover on interrupt or failure
-save_state({"pod_id": pod_id, "volume_id": volume_id})
+save_state({"pod_id": pod_id})
 print(f"  State saved to {STATE_FILE}  (rerun this script to retry on failure)")
 print(f"  Dashboard:   https://www.runpod.io/console/pods/{pod_id}")
 
