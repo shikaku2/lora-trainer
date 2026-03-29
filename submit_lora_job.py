@@ -7,9 +7,9 @@ a persistent network volume (so the base model survives pod restarts), polls unt
 done, then cleans everything up.
 
 On failure the pod is paused (not deleted) and state is written to .lora_trainer.state.
-Run the script again to restart: a fresh pod is created from the latest Docker image,
-the existing network volume (with the model already downloaded) is reused, and training
-resumes from whatever HF checkpoints were uploaded before the failure.
+Run the script again to restart: the existing pod is patched with the latest Docker image
+and updated env vars, then resumed on the same machine (Docker layers may be cached).
+The network volume (with the model already downloaded) is preserved and reattached.
 
 To abandon a failed run and start completely fresh, delete .lora_trainer.state.
 
