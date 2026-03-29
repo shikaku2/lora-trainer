@@ -343,10 +343,7 @@ print("\nEstimating disk requirements...")
 model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb = estimate_disk_gb(
     model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank,
 )
-# Network volume: model weights + HF cache overhead (persists across restarts)
-# Container disk: OS + conda packages + /tmp adapter outputs (ephemeral per pod)
-volume_size_gb    = max(60, int(model_gb * 1.15) + 5)
-container_disk_gb = 30
+container_disk_gb = max(80, int(total_gb * 1.1))
 
 if model_gb:
     print(f"  Model weights:  {model_gb:.1f} GB")
@@ -355,8 +352,7 @@ else:
 print(f"  LoRA adapters:  {adapters_gb:.2f} GB  (3 stages × {adapter_gb_each:.2f} GB, rank {rank})")
 print(f"  Dataset caches: {data_gb * 1000:.1f} MB")
 print(f"  ──────────────────────────────────────────")
-print(f"  Network volume: {volume_size_gb} GB  (model + HF cache, persists across restarts)")
-print(f"  Container disk: {container_disk_gb} GB  (OS, packages, temp adapter files)")
+print(f"  Container disk: {container_disk_gb} GB")
 
 # ----------------------------------------------------------------
 # Upload training files to temporary HF repo
