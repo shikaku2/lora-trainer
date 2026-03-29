@@ -190,7 +190,7 @@ def gpu_check():
 
 
 def apply_lora(model, rank: int):
-    return FastLanguageModel.get_peft_model(
+    model = FastLanguageModel.get_peft_model(
         model,
         r=rank,
         lora_alpha=rank * 2,
@@ -200,6 +200,15 @@ def apply_lora(model, rank: int):
         bias="none",
         use_gradient_checkpointing="unsloth",
     )
+    # Vision-language models (e.g. Mistral3ForConditionalGeneration) have a vision tower that
+    # unsloth may force to require_grad. Text-only batches never activate it, which disconnects
+    # the loss from the computation graph and causes "does not require grad" crashes.
+    inner = getattr(getattr(getattr(model, "base_model", model), "model", model), "model", model)
+    vt = getattr(inner, "vision_tower", None)
+    if vt is not None:
+        vt.requires_grad_(False)
+        print(f"  Frozen vision tower ({sum(p.numel() for p in vt.parameters())/1e6:.1f}M params)")
+    return model
 
 
 def make_training_args(output, epochs, batch_size, grad_accum, lr, bf16, fp16,
