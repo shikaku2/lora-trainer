@@ -2,14 +2,13 @@
 """
 submit_lora_job.py — submit a full CPT→QLoRA→DPO training run as a RunPod pod.
 
-Uploads training files to a temporary private HF repo, creates a RunPod pod with
-a persistent network volume (so the base model survives pod restarts), polls until
-done, then cleans everything up.
+Uploads training files to a temporary private HF repo, creates a RunPod pod, polls
+until done, then cleans everything up.
 
-On failure the pod is paused (not deleted) and state is written to .lora_trainer.state.
-Run the script again to restart: the existing pod is patched with the latest Docker image
+On failure the pod is paused and state is written to .lora_trainer.state.
+Run the script again to restart: the pod is patched with the latest Docker image digest
 and updated env vars, then resumed on the same machine (Docker layers may be cached).
-The network volume (with the model already downloaded) is preserved and reattached.
+Training resumes from whatever HF checkpoints were already uploaded.
 
 To abandon a failed run and start completely fresh, delete .lora_trainer.state.
 
