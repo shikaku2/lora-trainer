@@ -211,13 +211,26 @@ def apply_lora(model, rank: int):
         bias="none",
         use_gradient_checkpointing=gc,
     )
+    inner = getattr(getattr(getattr(model, "base_model", model), "model", model), "model", model)
+
     # Freeze vision tower — text-only batches never activate it, so leaving it trainable
     # disconnects the loss from the computation graph.
-    inner = getattr(getattr(getattr(model, "base_model", model), "model", model), "model", model)
     vt = getattr(inner, "vision_tower", None)
     if vt is not None:
         vt.requires_grad_(False)
         print(f"  Frozen vision tower ({sum(p.numel() for p in vt.parameters())/1e6:.1f}M params)")
+
+    # For VLMs, the outer forward (Mistral3ForConditionalGeneration) doesn't properly
+    # compute a differentiable loss for text-only inputs. Patch it to delegate directly
+    # to language_model, which is MistralForCausalLM and handles labels correctly.
+    lm = getattr(inner, "language_model", None)
+    if lm is not None:
+        import types
+        def _text_forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+            return lm(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        inner.forward = types.MethodType(_text_forward, inner)
+        print(f"  Patched {type(inner).__name__}.forward → language_model for text-only training")
+
     return model
 
 
