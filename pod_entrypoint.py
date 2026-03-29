@@ -76,6 +76,22 @@ def terminate_pod() -> None:
         log.error("Failed to terminate pod: %s", e)
 
 
+def pause_pod() -> None:
+    """Stop (pause) the pod on failure so the network volume is preserved for restart."""
+    pod_id  = os.environ.get("RUNPOD_POD_ID")
+    api_key = os.environ.get("RUNPOD_API_KEY")
+    if not pod_id or not api_key:
+        log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot pause pod")
+        return
+    try:
+        import runpod
+        runpod.api_key = api_key
+        runpod.stop_pod(pod_id)
+        log.info("Paused pod %s (network volume preserved — rerun submit_lora_job.py to retry)", pod_id)
+    except Exception as e:
+        log.error("Failed to pause pod: %s", e)
+
+
 def upload_error_log(repo: str, token: str, text: str) -> None:
     import io
     import time
