@@ -406,7 +406,7 @@ else:
         except Exception:
             pass
         try:
-            _rp.delete_network_volume(volume_id)
+            _rest("DELETE", f"/networkvolumes/{volume_id}")
             print(f"  Cleaned up network volume {volume_id}")
         except Exception:
             pass
