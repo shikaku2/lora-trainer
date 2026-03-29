@@ -104,7 +104,7 @@ def parse_lora_examples(text_path: str) -> bytes:
     Output: one {"text": "[INST] SYSTEM\\n\\nUSER [/INST] REPLY"} per line.
     """
     text = Path(text_path).read_text()
-    blocks = re.split(r"\n(?:=====|---)\n?", text)
+    blocks = re.split(r"\n(?:=====|-{2,})\n?", text)
 
     system_prompt = ""
     lines = []
