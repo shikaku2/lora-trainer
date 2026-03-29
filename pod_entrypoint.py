@@ -191,5 +191,8 @@ if __name__ == "__main__":
     finally:
         if data_repo and hf_token:
             delete_training_data_repo(data_repo, hf_token)
-        terminate_pod()
+        if exit_code == 0:
+            terminate_pod()
+        else:
+            pause_pod()
     sys.exit(exit_code)
