@@ -238,7 +238,10 @@ def apply_lora(model, rank: int):
         import types
         from transformers.modeling_outputs import CausalLMOutputWithPast
         def _text_forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
-            hidden = lm(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+            # Force requires_grad on the embedding output so PyTorch's checkpoint
+            # implementation builds a backward graph even though input_ids are integers.
+            embeds = lm.embed_tokens(input_ids).requires_grad_(True)
+            hidden = lm(inputs_embeds=embeds, attention_mask=attention_mask).last_hidden_state
             logits = lm_head(hidden)
             loss = None
             if labels is not None:
