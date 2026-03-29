@@ -417,9 +417,14 @@ if state:
     # ── Restart: patch existing pod with latest image + updated env, then resume ──
     pod_id    = state["pod_id"]
     volume_id = state["volume_id"]
-    print(f"\nPatching pod {pod_id} with latest image ({docker_image})...")
+    gh_token  = os.environ.get("GH_TOKEN", "")
+    pinned    = resolve_image_digest(docker_image, gh_token)
+    if pinned != docker_image:
+        print(f"\nPatching pod {pod_id} with {pinned}...")
+    else:
+        print(f"\nPatching pod {pod_id} with {docker_image} (could not resolve digest — re-pull not guaranteed)...")
     try:
-        _rest("PATCH", f"/pods/{pod_id}", {"imageName": docker_image, "env": pod_env})
+        _rest("PATCH", f"/pods/{pod_id}", {"imageName": pinned, "env": pod_env})
         print(f"  Pod patched.")
     except urllib.error.HTTPError as e:
         print(f"ERROR: Failed to patch pod {pod_id}: HTTP {e.code}: {e.read().decode()}")
