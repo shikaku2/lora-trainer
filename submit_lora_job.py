@@ -27,7 +27,6 @@ Optional env vars (with defaults):
   MODEL_PATH      base model HF repo or local path [unsloth/Magistral-Small-2509]
   DOCKER_IMAGE    pod container image              [ghcr.io/shikaku2/lora-trainer:latest]
   GPU_TYPE        RunPod GPU type ID               [NVIDIA A40]
-  DATACENTER_ID   RunPod datacenter for network volume  [US-TX-3]
   EPOCHS_CPT      CPT epochs                       [1]
   EPOCHS_LORA     QLoRA epochs                     [3]
   EPOCHS_DPO      DPO epochs                       [1]
