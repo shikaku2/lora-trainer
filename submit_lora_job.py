@@ -433,25 +433,7 @@ if state:
         print(f"ERROR: Failed to start pod {pod_id}: {e}")
         sys.exit(1)
 else:
-    # ── Fresh run: create network volume + pod ──
-    print(f"\nCreating network volume ({volume_size_gb} GB in {datacenter_id})...")
-    volume_id = None
-    try:
-        vol = _rest("POST", "/networkvolumes", {
-            "name":         f"lora-vol-{int(time.time())}",
-            "size":         volume_size_gb,
-            "dataCenterId": datacenter_id,
-        })
-        volume_id = vol["id"]
-        print(f"  Volume created: {volume_id}")
-    except Exception as e:
-        print(f"ERROR: Failed to create network volume: {e}")
-        try:
-            HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
-        except Exception:
-            pass
-        sys.exit(1)
-
+    # ── Fresh run: create pod ──
     gh_token = os.environ.get("GH_TOKEN", "")
     pinned   = resolve_image_digest(docker_image, gh_token)
     print(f"\nCreating RunPod pod ({gpu_type}, {pinned})...")
@@ -463,7 +445,6 @@ else:
             cloud_type="SECURE",
             gpu_count=1,
             container_disk_in_gb=container_disk_gb,
-            network_volume_id=volume_id,
             env=pod_env,
             ports=None,
             support_public_ip=False,
@@ -474,11 +455,6 @@ else:
         print(f"ERROR: Failed to create pod: {e}")
         try:
             HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
-        except Exception:
-            pass
-        try:
-            _rest("DELETE", f"/networkvolumes/{volume_id}")
-            print(f"  Cleaned up network volume {volume_id}")
         except Exception:
             pass
         sys.exit(1)
