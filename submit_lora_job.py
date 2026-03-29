@@ -358,10 +358,13 @@ if state:
         print(f"ERROR: Failed to patch pod {pod_id}: {e}")
         sys.exit(1)
     try:
-        _rp.resume_pod(pod_id, gpu_count=1)
-        print(f"  Pod {pod_id} resumed.")
+        _rest("POST", f"/pods/{pod_id}/start")
+        print(f"  Pod {pod_id} started.")
+    except urllib.error.HTTPError as e:
+        print(f"ERROR: Failed to start pod {pod_id}: HTTP {e.code}: {e.read().decode()}")
+        sys.exit(1)
     except Exception as e:
-        print(f"ERROR: Failed to resume pod: {e}")
+        print(f"ERROR: Failed to start pod {pod_id}: {e}")
         sys.exit(1)
 else:
     # ── Fresh run: create network volume + pod ──
