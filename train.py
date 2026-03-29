@@ -413,6 +413,8 @@ def cmd_qlora(args):
     if args.adapter:
         print(f"Loading existing LoRA adapter from {args.adapter}")
         model = PeftModel.from_pretrained(model, args.adapter, is_trainable=True)
+        if _is_vlm(model):
+            _patch_vlm(model)
     else:
         model = apply_lora(model, args.rank)
 
