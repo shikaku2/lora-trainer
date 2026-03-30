@@ -475,8 +475,6 @@ def cmd_dpo(args):
         dataset.save_to_disk(cache_path)
         print(f"Loaded {len(dataset)} DPO preference pairs")
 
-    PatchDPOTrainer()
-
     # Load base model + existing adapter via unsloth so its patches stay intact
     model, _ = FastLanguageModel.from_pretrained(
         model_name=args.adapter,
@@ -487,9 +485,16 @@ def cmd_dpo(args):
     )
     FastLanguageModel.for_training(model)
 
-    if _is_vlm(model):
+    is_vlm = _is_vlm(model)
+
+    if is_vlm:
+        # Unsloth's VLM DPO path requires an `images` column in the dataset — unusable for
+        # text-only DPO.  Skip PatchDPOTrainer and use vanilla TRL DPOTrainer; our
+        # _patch_vlm forward handles text-only loss computation correctly.
         _patch_vlm(model)
+        print("  VLM detected — using vanilla TRL DPOTrainer (skipping PatchDPOTrainer)")
     else:
+        PatchDPOTrainer()
         # For non-VLM Mistral models, unsloth sets _has_no_labels=True during DPO
         # (which has no labels), causing it to skip loss. Patch the instance forward
         # to reset it before each call.
@@ -503,19 +508,7 @@ def cmd_dpo(args):
 
     model.print_trainable_parameters()
 
-    if _is_vlm(model):
-        # Unsloth's UnslothDPOTrainer expects processing_class.tokenizer for VLMs
-        # (it tries to unpack: processor, tokenizer = processing_class, processing_class.tokenizer)
-        # AutoProcessor returns an object with a .tokenizer attribute.
-        from transformers import AutoProcessor
-        _token = os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
-        tokenizer = AutoProcessor.from_pretrained(args.model, token=_token)
-        if tokenizer.tokenizer.pad_token is None:
-            tokenizer.tokenizer.pad_token = tokenizer.tokenizer.eos_token
-        tokenizer.tokenizer.padding_side = "right"
-        print(f"  Loaded AutoProcessor for VLM DPO (tokenizer: {type(tokenizer.tokenizer).__name__})")
-    else:
-        tokenizer = load_dpo_tokenizer(args.model)
+    tokenizer = load_dpo_tokenizer(args.model)
 
     from trl import DPOTrainer, DPOConfig
     bf16 = torch.cuda.is_bf16_supported()
