@@ -29,8 +29,6 @@ def read_gguf_string_kv(data: bytes, key: str) -> tuple[str, int, int]:
     Raises KeyError if not found.
     """
     key_b = key.encode()
-    offset = 24  # skip magic(4) + version(4) + n_tensors(8) + n_kv(8)
-
     n_kv = struct.unpack_from('<Q', data, 16)[0]
     pos = 24
     for _ in range(n_kv):
