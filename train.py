@@ -541,6 +541,13 @@ def cmd_dpo(args):
         train_dataset=dataset,
         processing_class=tokenizer,
     )
+    # Restore the VLM mapping now that DPOTrainer.__init__ (which reads it) has returned
+    try:
+        if _vlm_entry is not None:
+            from transformers.models.auto.modeling_auto import MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES as _VLM_MAP
+            _VLM_MAP["mistral3"] = _vlm_entry
+    except Exception:
+        pass
     print("\nStarting DPO training...")
     trainer.train()
 
