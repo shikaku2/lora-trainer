@@ -495,19 +495,24 @@ def cmd_dpo(args):
     )
     FastLanguageModel.for_training(model)
 
-    is_vlm = _is_vlm(model)
-
-    if is_vlm:
-        # Unsloth's VLM DPO path requires an `images` column in the dataset — unusable for
-        # text-only DPO.  Skip PatchDPOTrainer and use vanilla TRL DPOTrainer; our
-        # _patch_vlm forward handles text-only loss computation correctly.
+    if _is_vlm(model):
+        # Pop mistral3 from TRL/Unsloth's VLM mapping so both treat this as a text-only
+        # model for data preparation (no images column required in the dataset).
+        # _patch_vlm handles the actual forward pass correctly for text-only input.
         _patch_vlm(model)
-        print("  VLM detected — using vanilla TRL DPOTrainer (skipping PatchDPOTrainer)")
-    else:
-        PatchDPOTrainer()
-        # For non-VLM Mistral models, unsloth sets _has_no_labels=True during DPO
-        # (which has no labels), causing it to skip loss. Patch the instance forward
-        # to reset it before each call.
+        try:
+            from transformers.models.auto.modeling_auto import MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES
+            MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.pop("mistral3", None)
+            print("  Removed mistral3 from VLM mapping — DPOTrainer will use text-only path")
+        except Exception as e:
+            print(f"  Warning: could not patch VLM mapping: {e}")
+
+    PatchDPOTrainer()
+
+    # For Mistral-family models unsloth sets _has_no_labels=True when DPO data has no
+    # labels field, causing the inner model forward to skip loss computation.  Our
+    # _patch_vlm overrides vlm.forward entirely so this is only needed for non-VLM.
+    if not _is_vlm(model):
         _inner = model.base_model.model.model
         _orig_fwd = _inner.forward
         def _safe_fwd(*args, **kwargs):
@@ -531,16 +536,7 @@ def cmd_dpo(args):
         max_length=args.max_seq_len,
         max_prompt_length=args.max_seq_len // 2,
     )
-    if is_vlm and _OriginalDPOTrainer is not None:
-        # Unsloth replaces trl.DPOTrainer with UnslothDPOTrainer at import time; its VLM
-        # branch requires an `images` column in the dataset — unusable for text-only DPO.
-        # Use the original TRL class saved before the unsloth import.
-        _TrainerClass = _OriginalDPOTrainer
-        print("  Using original TRL DPOTrainer (bypassing Unsloth VLM DPO patch)")
-    else:
-        _TrainerClass = DPOTrainer
-
-    trainer = _TrainerClass(
+    trainer = DPOTrainer(
         model=model,
         ref_model=None,
         args=dpo_config,
