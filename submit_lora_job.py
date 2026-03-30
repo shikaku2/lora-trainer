@@ -398,6 +398,7 @@ pod_env = {
     "FORCE_QLORA":        "1" if force_qlora else "0",
     "FORCE_DPO":          "1" if force_dpo   else "0",
     "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     **({ "CUDA_LAUNCH_BLOCKING": os.environ["CUDA_LAUNCH_BLOCKING"] }
        if "CUDA_LAUNCH_BLOCKING" in os.environ else {}),
 }
