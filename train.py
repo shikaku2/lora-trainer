@@ -492,11 +492,17 @@ def cmd_dpo(args):
         # model for data preparation (no images column required in the dataset).
         # _patch_vlm handles the actual forward pass correctly for text-only input.
         _patch_vlm(model)
+        # TRL v0.23 sets is_vision_model = model.config.model_type in
+        # MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES and then routes dataset
+        # preparation through process_row() which calls processing_class.tokenizer.
+        # Temporarily remove mistral3 so DPOTrainer uses the text-only tokenize_row
+        # path.  Restored after __init__ returns so nothing else is affected.
         try:
-            from transformers.models.auto.modeling_auto import MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES
-            MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.pop("mistral3", None)
-            print("  Removed mistral3 from VLM mapping — DPOTrainer will use text-only path")
+            from transformers.models.auto.modeling_auto import MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES as _VLM_MAP
+            _vlm_entry = _VLM_MAP.pop("mistral3", None)
+            print("  Removed mistral3 from MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES — DPOTrainer will use text-only path")
         except Exception as e:
+            _vlm_entry = None
             print(f"  Warning: could not patch VLM mapping: {e}")
 
     PatchDPOTrainer()
