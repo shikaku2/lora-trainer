@@ -13,6 +13,16 @@ import json
 import os
 
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+
+# Save TRL's original DPOTrainer.__init__ BEFORE unsloth patches it at import time.
+# Unsloth wraps the class at module load; for VLM models we need the unpatched version
+# because Unsloth's VLM DPO path requires an `images` column in the dataset.
+try:
+    import trl as _trl_module
+    _OriginalDPOTrainerInit = _trl_module.DPOTrainer.__init__
+except Exception:
+    _OriginalDPOTrainerInit = None
+
 from unsloth import FastLanguageModel, PatchDPOTrainer
 import sys
 import torch
