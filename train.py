@@ -531,13 +531,11 @@ def cmd_dpo(args):
         max_length=args.max_seq_len,
         max_prompt_length=args.max_seq_len // 2,
     )
-    if is_vlm and _OriginalDPOTrainerInit is not None:
-        # Unsloth patches DPOTrainer at import time; its VLM branch requires an `images`
-        # column in the dataset (unusable for text-only DPO).  Create a subclass that
-        # overrides __init__ with the original TRL implementation saved before the patch.
-        class _TextOnlyDPOTrainer(DPOTrainer):
-            __init__ = _OriginalDPOTrainerInit
-        _TrainerClass = _TextOnlyDPOTrainer
+    if is_vlm and _OriginalDPOTrainer is not None:
+        # Unsloth replaces trl.DPOTrainer with UnslothDPOTrainer at import time; its VLM
+        # branch requires an `images` column in the dataset — unusable for text-only DPO.
+        # Use the original TRL class saved before the unsloth import.
+        _TrainerClass = _OriginalDPOTrainer
         print("  Using original TRL DPOTrainer (bypassing Unsloth VLM DPO patch)")
     else:
         _TrainerClass = DPOTrainer
