@@ -403,13 +403,51 @@ pod_env = {
 }
 
 # ----------------------------------------------------------------
+# Pod helpers
+# ----------------------------------------------------------------
+_RETRY_DELAYS = [2, 4, 8]  # seconds between attempts before giving up
+
+
+def _create_fresh_pod(pinned: str) -> str:
+    """Create a brand-new pod. Retries with _RETRY_DELAYS on failure. Returns pod_id."""
+    for attempt, delay in enumerate([0] + _RETRY_DELAYS, 1):
+        if delay:
+            print(f"  Retrying pod creation in {delay}s (attempt {attempt}/{1 + len(_RETRY_DELAYS)})...")
+            time.sleep(delay)
+        try:
+            pod = _rp.create_pod(
+                name=f"lora-training-{int(time.time())}",
+                image_name=pinned,
+                gpu_type_id=gpu_type,
+                cloud_type="SECURE",
+                gpu_count=1,
+                container_disk_in_gb=container_disk_gb,
+                env=pod_env,
+                ports=None,
+                support_public_ip=False,
+            )
+            pid = pod["id"]
+            print(f"  Pod created: {pid}")
+            return pid
+        except Exception as e:
+            print(f"  Pod creation failed: {e}")
+    print("ERROR: Could not create pod after all retries.")
+    try:
+        HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
+    except Exception:
+        pass
+    sys.exit(1)
+
+
+# ----------------------------------------------------------------
 # Create pod (fresh) or patch + resume existing pod (restart)
 # ----------------------------------------------------------------
+gh_token = os.environ.get("GH_TOKEN", "")
+pinned   = resolve_image_digest(docker_image, gh_token)
+
 if state:
     # ── Restart: patch existing pod with latest image + updated env, then resume ──
-    pod_id   = state["pod_id"]
-    gh_token = os.environ.get("GH_TOKEN", "")
-    pinned    = resolve_image_digest(docker_image, gh_token)
+    pod_id = state["pod_id"]
     if pinned != docker_image:
         print(f"\nPatching pod {pod_id} with {pinned}...")
     else:
@@ -423,41 +461,35 @@ if state:
     except Exception as e:
         print(f"ERROR: Failed to patch pod {pod_id}: {e}")
         sys.exit(1)
-    try:
-        _rest("POST", f"/pods/{pod_id}/start")
-        print(f"  Pod {pod_id} started.")
-    except urllib.error.HTTPError as e:
-        print(f"ERROR: Failed to start pod {pod_id}: HTTP {e.code}: {e.read().decode()}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"ERROR: Failed to start pod {pod_id}: {e}")
-        sys.exit(1)
+
+    # Try to start with retries; if GPU is gone, tear down and create a fresh pod
+    started = False
+    for attempt, delay in enumerate([0] + _RETRY_DELAYS, 1):
+        if delay:
+            print(f"  GPU unavailable — retrying in {delay}s (attempt {attempt}/{1 + len(_RETRY_DELAYS)})...")
+            time.sleep(delay)
+        try:
+            _rest("POST", f"/pods/{pod_id}/start")
+            print(f"  Pod {pod_id} started.")
+            started = True
+            break
+        except Exception as e:
+            print(f"  Start failed: {e}")
+
+    if not started:
+        print(f"\n  Could not start pod {pod_id} — GPU may no longer be available.")
+        print(f"  Terminating old pod and creating a fresh one...")
+        try:
+            _rp.terminate_pod(pod_id)
+            print(f"  Old pod {pod_id} terminated.")
+        except Exception as e:
+            print(f"  Could not terminate old pod ({e}) — continuing anyway.")
+        clear_state()
+        pod_id = _create_fresh_pod(pinned)
 else:
     # ── Fresh run: create pod ──
-    gh_token = os.environ.get("GH_TOKEN", "")
-    pinned   = resolve_image_digest(docker_image, gh_token)
     print(f"\nCreating RunPod pod ({gpu_type}, {pinned})...")
-    try:
-        pod = _rp.create_pod(
-            name=f"lora-training-{int(time.time())}",
-            image_name=pinned,
-            gpu_type_id=gpu_type,
-            cloud_type="SECURE",
-            gpu_count=1,
-            container_disk_in_gb=container_disk_gb,
-            env=pod_env,
-            ports=None,
-            support_public_ip=False,
-        )
-        pod_id = pod["id"]
-        print(f"  Pod created: {pod_id}")
-    except Exception as e:
-        print(f"ERROR: Failed to create pod: {e}")
-        try:
-            HfApi(token=hf_token).delete_repo(training_data_repo, repo_type="model")
-        except Exception:
-            pass
-        sys.exit(1)
+    pod_id = _create_fresh_pod(pinned)
 
 # Save state immediately so we can recover on interrupt or failure
 save_state({"pod_id": pod_id})
