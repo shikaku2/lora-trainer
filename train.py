@@ -487,6 +487,8 @@ def cmd_dpo(args):
     )
     FastLanguageModel.for_training(model)
 
+    _vlm_entry = None  # may be set in the VLM block below; used to restore after DPOTrainer init
+
     if _is_vlm(model):
         # Pop mistral3 from TRL/Unsloth's VLM mapping so both treat this as a text-only
         # model for data preparation (no images column required in the dataset).
