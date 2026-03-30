@@ -503,7 +503,19 @@ def cmd_dpo(args):
 
     model.print_trainable_parameters()
 
-    tokenizer = load_dpo_tokenizer(args.model)
+    if _is_vlm(model):
+        # Unsloth's UnslothDPOTrainer expects processing_class.tokenizer for VLMs
+        # (it tries to unpack: processor, tokenizer = processing_class, processing_class.tokenizer)
+        # AutoProcessor returns an object with a .tokenizer attribute.
+        from transformers import AutoProcessor
+        _token = os.environ.get("HF_TOKEN") or os.environ.get("HF_WRITE_TOKEN")
+        tokenizer = AutoProcessor.from_pretrained(args.model, token=_token)
+        if tokenizer.tokenizer.pad_token is None:
+            tokenizer.tokenizer.pad_token = tokenizer.tokenizer.eos_token
+        tokenizer.tokenizer.padding_side = "right"
+        print(f"  Loaded AutoProcessor for VLM DPO (tokenizer: {type(tokenizer.tokenizer).__name__})")
+    else:
+        tokenizer = load_dpo_tokenizer(args.model)
 
     from trl import DPOTrainer, DPOConfig
     bf16 = torch.cuda.is_bf16_supported()
