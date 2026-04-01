@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
-RunPod pod entrypoint — downloads training data from HF, runs the full
-CPT→QLoRA→DPO pipeline via handler.run_training_job(), cleans up the
-temporary training-data repo, then self-terminates the pod.
+RunPod pod entrypoint — full CPT→QLoRA→DPO training pipeline.
+
+Downloads training data from a temporary HF repo, runs the three stages in
+sequence (each uploading its adapter to HF immediately on completion), then
+deletes the temporary data repo and self-terminates the pod.
+
+On failure the pod is stopped (paused) so the network volume is preserved.
+Run submit_lora_job.py again to restart: it will patch the pod with the latest
+image and resume.  Training automatically skips any stage whose adapter is
+already on HF.
 
 Environment variables (set by submit_lora_job.py at pod creation):
   HF_WRITE_TOKEN        HuggingFace write token
@@ -14,14 +21,21 @@ Environment variables (set by submit_lora_job.py at pod creation):
   EPOCHS_CPT/LORA/DPO  Training epochs
   RANK                  LoRA rank
   MAX_SEQ_LEN           Sequence length cap
+  LR_CPT/LORA/DPO       Learning rates
+  BETA                  DPO beta
+  NO_4BIT               Disable 4-bit quant (0/1)
   FORCE_CPT/QLORA/DPO   Re-run stage even if checkpoint exists (0/1)
 """
 
-import base64
+import io
+import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
+import time
+import urllib.request
 from pathlib import Path
 
 logging.basicConfig(
@@ -30,35 +44,29 @@ logging.basicConfig(
 )
 log = logging.getLogger("pod")
 
+SCRIPT_DIR = Path(__file__).parent
+TRAIN      = SCRIPT_DIR / "train.py"
 
-def download_model(model_path: str, token: str) -> None:
-    """Download the base model into the HF cache so check_model_cached() passes."""
-    from huggingface_hub import snapshot_download
-    log.info("Downloading base model %s (this may take a while)...", model_path)
-    snapshot_download(repo_id=model_path, token=token)
-    log.info("Model download complete.")
+RUNPOD_REST = "https://rest.runpod.io/v1"
 
 
-def download_training_data(repo: str, token: str, dest: Path) -> None:
-    from huggingface_hub import snapshot_download
-    log.info("Downloading training data from %s ...", repo)
-    snapshot_download(
-        repo_id=repo,
-        repo_type="model",
-        token=token,
-        local_dir=str(dest),
-        ignore_patterns=["*.gitattributes"],
+# ----------------------------------------------------------------
+# RunPod REST helpers
+# ----------------------------------------------------------------
+
+def _runpod(method: str, path: str, body=None):
+    api_key = os.environ.get("RUNPOD_API_KEY", "")
+    req = urllib.request.Request(
+        f"{RUNPOD_REST}{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        },
+        method=method,
     )
-    log.info("Downloaded to %s", dest)
-
-
-def delete_training_data_repo(repo: str, token: str) -> None:
-    try:
-        from huggingface_hub import HfApi
-        HfApi(token=token).delete_repo(repo_id=repo, repo_type="model")
-        log.info("Deleted temporary training data repo: %s", repo)
-    except Exception as e:
-        log.warning("Could not delete training data repo %s: %s", repo, e)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
 
 
 def terminate_pod() -> None:
@@ -68,51 +76,83 @@ def terminate_pod() -> None:
         log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot self-terminate")
         return
     try:
-        import runpod
-        runpod.api_key = api_key
-        runpod.terminate_pod(pod_id)
+        _runpod("DELETE", f"/pods/{pod_id}")
         log.info("Terminated pod %s", pod_id)
     except Exception as e:
         log.error("Failed to terminate pod: %s", e)
 
 
-def pause_pod() -> None:
-    """Stop (pause) the pod on failure so the network volume is preserved for restart."""
+def stop_pod() -> None:
+    """Stop (pause) the pod on failure so the network volume is preserved."""
     pod_id  = os.environ.get("RUNPOD_POD_ID")
     api_key = os.environ.get("RUNPOD_API_KEY")
     if not pod_id or not api_key:
-        log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot pause pod")
+        log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot stop pod")
         return
     try:
-        import runpod
-        runpod.api_key = api_key
-        runpod.stop_pod(pod_id)
-        log.info("Paused pod %s (network volume preserved — rerun submit_lora_job.py to retry)", pod_id)
+        _runpod("POST", f"/pods/{pod_id}/stop")
+        log.info("Stopped pod %s (network volume preserved — rerun submit_lora_job.py to retry)", pod_id)
     except Exception as e:
-        log.error("Failed to pause pod: %s", e)
+        log.error("Failed to stop pod: %s", e)
 
 
-def upload_error_log(repo: str, token: str, text: str) -> None:
-    import io
-    import time
+# ----------------------------------------------------------------
+# HuggingFace helpers
+# ----------------------------------------------------------------
+
+def hf_repo_has_adapter(repo_id: str, token: str) -> bool:
+    try:
+        from huggingface_hub import HfApi
+        files = list(HfApi(token=token).list_repo_files(repo_id, repo_type="model"))
+        return any("adapter_model" in f for f in files)
+    except Exception as e:
+        log.debug("hf_repo_has_adapter(%s): %s", repo_id, e)
+        return False
+
+
+def hf_download(repo_id: str, token: str, local_dir: Path) -> None:
+    from huggingface_hub import snapshot_download
+    log.info("Downloading adapter from %s ...", repo_id)
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="model",
+        token=token,
+        local_dir=str(local_dir),
+    )
+    log.info("Downloaded to %s", local_dir)
+
+
+def hf_upload(local_dir: Path, repo_id: str, token: str, commit_message: str) -> None:
+    from huggingface_hub import HfApi
+    api = HfApi(token=token)
+    api.create_repo(repo_id, repo_type="model", exist_ok=True, private=True)
+    api.upload_folder(
+        folder_path=str(local_dir),
+        repo_id=repo_id,
+        repo_type="model",
+        commit_message=commit_message,
+    )
+    log.info("Uploaded %s → https://huggingface.co/%s", local_dir.name, repo_id)
+
+
+def upload_error_log(repo_id: str, token: str, text: str) -> None:
     from huggingface_hub import HfApi
     api = HfApi(token=token)
     try:
-        api.create_repo(repo, repo_type="model", exist_ok=True, private=True)
+        api.create_repo(repo_id, repo_type="model", exist_ok=True, private=True)
     except Exception as e:
-        log.warning("Could not create error log repo %s: %s", repo, e)
+        log.warning("Could not create error log repo %s: %s", repo_id, e)
         return
-    # Retry upload a few times — HF repo creation can be eventually consistent
     for attempt in range(3):
         try:
             api.upload_file(
                 path_or_fileobj=io.BytesIO(text.encode()),
                 path_in_repo="pod_error.log",
-                repo_id=repo,
+                repo_id=repo_id,
                 repo_type="model",
                 commit_message="pod error log",
             )
-            log.info("Error log uploaded to %s/pod_error.log", repo)
+            log.info("Error log uploaded to %s/pod_error.log", repo_id)
             return
         except Exception as e:
             if attempt < 2:
@@ -121,6 +161,192 @@ def upload_error_log(repo: str, token: str, text: str) -> None:
             else:
                 log.warning("Could not upload error log after 3 attempts: %s", e)
 
+
+def delete_training_data_repo(repo_id: str, token: str) -> None:
+    try:
+        from huggingface_hub import HfApi
+        HfApi(token=token).delete_repo(repo_id=repo_id, repo_type="model")
+        log.info("Deleted temporary training data repo: %s", repo_id)
+    except Exception as e:
+        log.warning("Could not delete training data repo %s: %s", repo_id, e)
+
+
+# ----------------------------------------------------------------
+# Training subprocess
+# ----------------------------------------------------------------
+
+def _run(cmd, log_prefix="", timeout=21600):
+    log.info("%sRunning: %s", log_prefix, " ".join(str(c) for c in cmd))
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    lines = []
+    deadline = time.time() + timeout
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            lines.append(line)
+            log.info("%s%s", log_prefix, line)
+            if time.time() > deadline:
+                proc.kill()
+                raise TimeoutError(f"Command exceeded {timeout}s timeout")
+    finally:
+        proc.wait()
+    return proc.returncode, lines[-200:]
+
+
+# ----------------------------------------------------------------
+# Pipeline
+# ----------------------------------------------------------------
+
+def run_pipeline(
+    data_dir:    Path,
+    workdir:     Path,
+    model_path:  str,
+    hf_repo:     str,
+    hf_token:    str,
+    epochs_cpt:  int,
+    epochs_lora: int,
+    epochs_dpo:  int,
+    rank:        int,
+    max_seq_len: int,
+    lr_cpt:      float,
+    lr_lora:     float,
+    lr_dpo:      float,
+    beta:        float,
+    no_4bit:     bool,
+    force_cpt:   bool,
+    force_qlora: bool,
+    force_dpo:   bool,
+) -> None:
+    """
+    Run CPT→QLoRA→DPO.  Uploads adapter to HF after each stage.
+    Skips stages whose adapter is already on HF (unless force_* is set).
+    Raises on any failure.
+    """
+    hf_repo_cpt   = f"{hf_repo}-cpt"
+    hf_repo_qlora = f"{hf_repo}-qlora"
+
+    cpt_data  = data_dir / "cpt.txt"
+    lora_data = data_dir / "lora.jsonl"
+    dpo_data  = data_dir / "dpo.jsonl"
+
+    cpt_out  = workdir / "cpt-output"
+    lora_out = workdir / "lora-output"
+    dpo_out  = workdir / "dpo-output"
+
+    no4bit_flag = ["--no-4bit"] if no_4bit else []
+    all_logs    = []
+    t_total     = time.time()
+
+    # ----------------------------------------------------------------
+    # Stage 1 — CPT
+    # ----------------------------------------------------------------
+    cpt_on_hf = hf_repo_has_adapter(hf_repo_cpt, hf_token)
+    if not force_cpt and (force_dpo or force_qlora or cpt_on_hf):
+        if not cpt_on_hf:
+            raise RuntimeError(
+                f"FORCE_QLORA/FORCE_DPO set but no CPT adapter at {hf_repo_cpt}. "
+                "Remove force flags to train from scratch."
+            )
+        log.info("=== Stage 1/3: CPT — skipping (found %s) ===", hf_repo_cpt)
+        hf_download(hf_repo_cpt, hf_token, cpt_out)
+    else:
+        log.info("=== Stage 1/3: CPT ===")
+        t0 = time.time()
+        rc, lines = _run([
+            sys.executable, str(TRAIN), "cpt",
+            "--model",       model_path,
+            "--data",        str(cpt_data),
+            "--output",      str(cpt_out),
+            "--epochs",      str(epochs_cpt),
+            "--rank",        str(rank),
+            "--max-seq-len", str(max_seq_len),
+            "--lr",          str(lr_cpt),
+            *no4bit_flag,
+        ], log_prefix="[CPT] ")
+        all_logs += lines
+        if rc != 0:
+            raise RuntimeError(f"CPT stage failed (exit {rc})\n" + "\n".join(lines[-50:]))
+        log.info("CPT done in %.1fs — uploading checkpoint...", time.time() - t0)
+        hf_upload(cpt_out, hf_repo_cpt, hf_token, f"CPT adapter after {epochs_cpt} epoch(s)")
+
+    # ----------------------------------------------------------------
+    # Stage 2 — QLoRA
+    # ----------------------------------------------------------------
+    qlora_on_hf = hf_repo_has_adapter(hf_repo_qlora, hf_token)
+    if not force_qlora and (force_dpo or qlora_on_hf):
+        if not qlora_on_hf:
+            raise RuntimeError(
+                f"FORCE_DPO set but no QLoRA adapter at {hf_repo_qlora}. "
+                "Remove force flags to train from scratch."
+            )
+        log.info("=== Stage 2/3: QLoRA — skipping (found %s) ===", hf_repo_qlora)
+        hf_download(hf_repo_qlora, hf_token, lora_out)
+    else:
+        log.info("=== Stage 2/3: QLoRA ===")
+        t0 = time.time()
+        rc, lines = _run([
+            sys.executable, str(TRAIN), "qlora",
+            "--model",       model_path,
+            "--adapter",     str(cpt_out),
+            "--data",        str(lora_data),
+            "--output",      str(lora_out),
+            "--epochs",      str(epochs_lora),
+            "--rank",        str(rank),
+            "--max-seq-len", str(max_seq_len),
+            "--lr",          str(lr_lora),
+            *no4bit_flag,
+        ], log_prefix="[QLoRA] ")
+        all_logs += lines
+        if rc != 0:
+            raise RuntimeError(f"QLoRA stage failed (exit {rc})\n" + "\n".join(lines[-50:]))
+        log.info("QLoRA done in %.1fs — uploading checkpoint...", time.time() - t0)
+        hf_upload(lora_out, hf_repo_qlora, hf_token, f"QLoRA adapter after {epochs_lora} epoch(s)")
+
+    # ----------------------------------------------------------------
+    # Stage 3 — DPO
+    # ----------------------------------------------------------------
+    if not force_dpo and hf_repo_has_adapter(hf_repo, hf_token):
+        log.info("=== Stage 3/3: DPO — skipping (found %s) ===", hf_repo)
+    else:
+        log.info("=== Stage 3/3: DPO ===")
+        t0 = time.time()
+        rc, lines = _run([
+            sys.executable, str(TRAIN), "dpo",
+            "--model",       model_path,
+            "--adapter",     str(lora_out),
+            "--data",        str(dpo_data),
+            "--output",      str(dpo_out),
+            "--epochs",      str(epochs_dpo),
+            "--rank",        str(rank),
+            "--max-seq-len", str(max_seq_len),
+            "--lr",          str(lr_dpo),
+            "--beta",        str(beta),
+            *no4bit_flag,
+        ], log_prefix="[DPO] ")
+        all_logs += lines
+        if rc != 0:
+            raise RuntimeError(f"DPO stage failed (exit {rc})\n" + "\n".join(lines[-50:]))
+        log.info("DPO done in %.1fs — uploading final adapter...", time.time() - t0)
+        lora_count = sum(1 for l in lora_data.read_text().splitlines() if l.strip())
+        dpo_count  = sum(1 for l in dpo_data.read_text().splitlines()  if l.strip())
+        hf_upload(
+            dpo_out, hf_repo, hf_token,
+            f"CPT→QLoRA→DPO adapter ({lora_count} QLoRA, {dpo_count} DPO pairs)",
+        )
+
+    log.info("Pipeline complete in %.1fs", time.time() - t_total)
+
+
+# ----------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------
 
 def main() -> None:
     hf_token    = os.environ["HF_WRITE_TOKEN"]
@@ -132,38 +358,53 @@ def main() -> None:
     epochs_dpo  = int(os.environ.get("EPOCHS_DPO",  "1"))
     rank        = int(os.environ.get("RANK",        "16"))
     max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "2048"))
+    lr_cpt      = float(os.environ.get("LR_CPT",   "1e-4"))
+    lr_lora     = float(os.environ.get("LR_LORA",  "2e-4"))
+    lr_dpo      = float(os.environ.get("LR_DPO",   "5e-5"))
+    beta        = float(os.environ.get("BETA",      "0.1"))
+    no_4bit     = os.environ.get("NO_4BIT",    "0") == "1"
     force_cpt   = os.environ.get("FORCE_CPT",   "0") == "1"
     force_qlora = os.environ.get("FORCE_QLORA", "0") == "1"
     force_dpo   = os.environ.get("FORCE_DPO",   "0") == "1"
 
-    download_model(model_path, hf_token)
-
+    # Download training data from the temporary HF repo
     with tempfile.TemporaryDirectory(prefix="lora_pod_") as workdir:
-        data_dir = Path(workdir) / "training-data"
-        download_training_data(data_repo, hf_token, data_dir)
+        workdir  = Path(workdir)
+        data_dir = workdir / "training-data"
+        out_dir  = workdir / "outputs"
+        out_dir.mkdir()
 
-        # Re-encode as base64 so we can reuse handler.run_training_job() as-is
-        event = {
-            "cpt_b64":     base64.b64encode((data_dir / "cpt.txt").read_bytes()).decode(),
-            "lora_b64":    base64.b64encode((data_dir / "lora.jsonl").read_bytes()).decode(),
-            "dpo_b64":     base64.b64encode((data_dir / "dpo.jsonl").read_bytes()).decode(),
-            "hf_token":    hf_token,
-            "hf_repo":     hf_repo,
-            "model_path":  model_path,
-            "epochs_cpt":  epochs_cpt,
-            "epochs_lora": epochs_lora,
-            "epochs_dpo":  epochs_dpo,
-            "rank":        rank,
-            "max_seq_len": max_seq_len,
-            "force_cpt":   force_cpt,
-            "force_qlora": force_qlora,
-            "force_dpo":   force_dpo,
-        }
+        log.info("Downloading training data from %s ...", data_repo)
+        from huggingface_hub import snapshot_download
+        snapshot_download(
+            repo_id=data_repo,
+            repo_type="model",
+            token=hf_token,
+            local_dir=str(data_dir),
+            ignore_patterns=["*.gitattributes"],
+        )
+        log.info("Downloaded training data to %s", data_dir)
 
-        from handler import run_training_job
-        result = run_training_job(event)
-
-    return result
+        run_pipeline(
+            data_dir=data_dir,
+            workdir=out_dir,
+            model_path=model_path,
+            hf_repo=hf_repo,
+            hf_token=hf_token,
+            epochs_cpt=epochs_cpt,
+            epochs_lora=epochs_lora,
+            epochs_dpo=epochs_dpo,
+            rank=rank,
+            max_seq_len=max_seq_len,
+            lr_cpt=lr_cpt,
+            lr_lora=lr_lora,
+            lr_dpo=lr_dpo,
+            beta=beta,
+            no_4bit=no_4bit,
+            force_cpt=force_cpt,
+            force_qlora=force_qlora,
+            force_dpo=force_dpo,
+        )
 
 
 if __name__ == "__main__":
@@ -172,27 +413,20 @@ if __name__ == "__main__":
     hf_repo   = os.environ.get("HF_REPO", "")
     exit_code = 1
     try:
-        result = main()
-        if result.get("status") == "ok":
-            log.info("Pipeline complete: %s", result.get("message"))
-            exit_code = 0
-        else:
-            stage = result.get("stage", "unknown")
-            msg   = result.get("message", "unknown error")
-            lines = result.get("logs") or []
-            log.error("Pipeline failed [%s]: %s", stage, msg)
-            err_text = f"Stage: {stage}\nError: {msg}\n\nLast logs:\n" + "\n".join(lines[-200:])
-            upload_error_log(hf_repo, hf_token, err_text)
+        main()
+        exit_code = 0
+        log.info("Pipeline complete.")
     except Exception:
         import traceback
         err_text = traceback.format_exc()
-        log.error("Pod failed with exception:\n%s", err_text)
-        upload_error_log(hf_repo, hf_token, err_text)
+        log.error("Pipeline failed:\n%s", err_text)
+        if hf_repo and hf_token:
+            upload_error_log(hf_repo, hf_token, err_text)
     finally:
         if data_repo and hf_token:
             delete_training_data_repo(data_repo, hf_token)
         if exit_code == 0:
             terminate_pod()
         else:
-            pause_pod()
+            stop_pod()
     sys.exit(exit_code)

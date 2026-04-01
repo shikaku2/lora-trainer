@@ -35,6 +35,11 @@ Optional env vars (with defaults):
   FORCE_CPT       re-run CPT even if cached (0/1)  [0]
   FORCE_QLORA     re-run QLoRA even if cached      [0]
   FORCE_DPO       re-run DPO even if cached        [0]
+  LR_CPT          CPT learning rate                [1e-4]
+  LR_LORA         QLoRA learning rate              [2e-4]
+  LR_DPO          DPO learning rate                [5e-5]
+  BETA            DPO beta                         [0.1]
+  NO_4BIT         disable 4-bit quantization (0/1) [0]
   GH_TOKEN        GitHub token for GHCR digest resolution (optional, for private images)
 """
 
@@ -187,11 +192,13 @@ rank          = int(env("RANK",         "16"))
 force_cpt     = env("FORCE_CPT",   "0") == "1"
 force_qlora   = env("FORCE_QLORA", "0") == "1"
 force_dpo     = env("FORCE_DPO",   "0") == "1"
+lr_cpt        = env("LR_CPT",   "1e-4")
+lr_lora       = env("LR_LORA",  "2e-4")
+lr_dpo        = env("LR_DPO",   "5e-5")
+beta          = env("BETA",     "0.1")
+no_4bit       = env("NO_4BIT",  "0") == "1"
 
 training_data_repo = f"{hf_repo}-training-data"
-
-import runpod as _rp
-_rp.api_key = api_key
 
 RUNPOD_REST = "https://rest.runpod.io/v1"
 
@@ -397,6 +404,11 @@ pod_env = {
     "FORCE_CPT":          "1" if force_cpt  else "0",
     "FORCE_QLORA":        "1" if force_qlora else "0",
     "FORCE_DPO":          "1" if force_dpo   else "0",
+    "LR_CPT":             str(lr_cpt),
+    "LR_LORA":            str(lr_lora),
+    "LR_DPO":             str(lr_dpo),
+    "BETA":               str(beta),
+    "NO_4BIT":            "1" if no_4bit else "0",
     "HF_HUB_ENABLE_HF_TRANSFER": "1",
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     **({ "CUDA_LAUNCH_BLOCKING": os.environ["CUDA_LAUNCH_BLOCKING"] }
@@ -416,17 +428,15 @@ def _create_fresh_pod(pinned: str) -> str:
             print(f"  Retrying pod creation in {delay}s (attempt {attempt}/{1 + len(_RETRY_DELAYS)})...")
             time.sleep(delay)
         try:
-            pod = _rp.create_pod(
-                name=f"lora-training-{int(time.time())}",
-                image_name=pinned,
-                gpu_type_id=gpu_type,
-                cloud_type="SECURE",
-                gpu_count=1,
-                container_disk_in_gb=container_disk_gb,
-                env=pod_env,
-                ports=None,
-                support_public_ip=False,
-            )
+            pod = _rest("POST", "/pods", {
+                "name":               f"lora-training-{int(time.time())}",
+                "imageName":          pinned,
+                "gpuTypeIds":         [gpu_type],
+                "cloudType":          "SECURE",
+                "gpuCount":           1,
+                "containerDiskInGb":  container_disk_gb,
+                "env":                pod_env,
+            })
             pid = pod["id"]
             print(f"  Pod created: {pid}")
             return pid
@@ -481,7 +491,7 @@ if state:
         print(f"\n  Could not start pod {pod_id} — GPU may no longer be available.")
         print(f"  Terminating old pod and creating a fresh one...")
         try:
-            _rp.terminate_pod(pod_id)
+            _rest("DELETE", f"/pods/{pod_id}")
             print(f"  Old pod {pod_id} terminated.")
         except Exception as e:
             print(f"  Could not terminate old pod ({e}) — continuing anyway.")
@@ -507,7 +517,7 @@ while True:
     time.sleep(20)
     elapsed = int(time.time() - start)
     try:
-        pod_info = _rp.get_pod(pod_id)
+        pod_info = _rest("GET", f"/pods/{pod_id}")
         if pod_info is None:
             print(f"\n[{elapsed:5d}s] Pod terminated (no longer found)")
             break
@@ -564,7 +574,7 @@ except Exception as e:
 if success:
     print("\nCleaning up...")
     try:
-        _rp.terminate_pod(pod_id)
+        _rest("DELETE", f"/pods/{pod_id}")
         print(f"  Pod {pod_id} terminated.")
     except Exception as e:
         print(f"  Pod {pod_id} already gone ({e}).")
