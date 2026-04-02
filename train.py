@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 4
+VERSION = 5
 
 import argparse
 import json
@@ -29,16 +29,10 @@ def gpu_check():
     print(f"train.py version {VERSION}")
     for cmd in [
         ["which", "axolotl"],
-        [sys.executable, "-c",
-         "import axolotl, os, pkgutil; "
-         "print(os.path.dirname(axolotl.__file__)); "
-         "print([m.name for m in pkgutil.iter_modules(axolotl.__path__)])"],
-        [sys.executable, "-c",
-         "import axolotl.cli, pkgutil; "
-         "print([m.name for m in pkgutil.iter_modules(axolotl.cli.__path__)])"],
+        ["ls", "/workspace/axolotl/src/axolotl/cli/"],
     ]:
         out = subprocess.run(cmd, capture_output=True, text=True)
-        print(f"  {' '.join(cmd)[:60]} → {(out.stdout + out.stderr).strip()}")
+        print(f"  {' '.join(cmd)} → {(out.stdout + out.stderr).strip()}")
     import torch
     if not torch.cuda.is_available():
         print("ERROR: No GPU detected — aborting.")
@@ -48,23 +42,22 @@ def gpu_check():
 
 
 def run_axolotl(config_path: str):
-    """Launch axolotl training with the given YAML config."""
-    # Try invocations in order until one works. The py3.11 conda env may need
-    # to be activated for axolotl.cli to be importable, so try conda run first.
-    attempts = [
-        ["conda", "run", "-n", "py3.11", "axolotl", "train", config_path, "--launcher", "python"],
-        ["conda", "run", "-n", "py3.11", "axolotl", "train", config_path],
-        ["axolotl", "train", config_path, "--launcher", "python"],
-        ["axolotl", "train", config_path],
-    ]
-    for cmd in attempts:
-        print(f"Trying: {' '.join(cmd)}")
-        result = subprocess.run(cmd)
-        if result.returncode == 0:
-            return
-        print(f"  → exit {result.returncode}, trying next...")
-    print(f"ERROR: all axolotl invocations failed")
-    sys.exit(1)
+    """Launch axolotl training with the given YAML config.
+
+    The image installs axolotl as an editable install from /workspace/axolotl/src
+    but the .pth file is broken, so axolotl.cli is unreachable without explicitly
+    adding the source to PYTHONPATH.
+    """
+    env = os.environ.copy()
+    src = "/workspace/axolotl/src"
+    env["PYTHONPATH"] = src + (":" + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
+
+    cmd = ["axolotl", "train", config_path]
+    print(f"Running: {' '.join(cmd)}  (PYTHONPATH includes {src})")
+    result = subprocess.run(cmd, env=env)
+    if result.returncode != 0:
+        print(f"ERROR: axolotl exited with code {result.returncode}")
+        sys.exit(result.returncode)
 
 
 def base_config(args) -> dict:
