@@ -23,7 +23,7 @@ Environment variables (set by submit_lora_job.py at pod creation):
   MAX_SEQ_LEN           Sequence length cap
   LR_CPT/LORA/DPO       Learning rates
   BETA                  DPO beta
-  NO_4BIT               Disable 4-bit quant (0/1)
+
   FORCE_CPT/QLORA/DPO   Re-run stage even if checkpoint exists (0/1)
 """
 
@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 4
+VERSION = 5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -227,7 +227,7 @@ def run_pipeline(
     lr_lora:     float,
     lr_dpo:      float,
     beta:        float,
-    no_4bit:     bool,
+
     force_cpt:   bool,
     force_qlora: bool,
     force_dpo:   bool,
@@ -248,7 +248,6 @@ def run_pipeline(
     lora_out = workdir / "lora-output"
     dpo_out  = workdir / "dpo-output"
 
-    no4bit_flag = ["--no-4bit"] if no_4bit else []
     all_logs    = []
     t_total     = time.time()
 
@@ -276,7 +275,6 @@ def run_pipeline(
             "--rank",        str(rank),
             "--max-seq-len", str(max_seq_len),
             "--lr",          str(lr_cpt),
-            *no4bit_flag,
         ], log_prefix="[CPT] ")
         all_logs += lines
         if rc != 0:
@@ -309,7 +307,6 @@ def run_pipeline(
             "--rank",        str(rank),
             "--max-seq-len", str(max_seq_len),
             "--lr",          str(lr_lora),
-            *no4bit_flag,
         ], log_prefix="[QLoRA] ")
         all_logs += lines
         if rc != 0:
@@ -336,7 +333,6 @@ def run_pipeline(
             "--max-seq-len", str(max_seq_len),
             "--lr",          str(lr_dpo),
             "--beta",        str(beta),
-            *no4bit_flag,
         ], log_prefix="[DPO] ")
         all_logs += lines
         if rc != 0:
@@ -404,7 +400,6 @@ def main() -> None:
     lr_lora     = float(os.environ.get("LR_LORA",  "2e-4"))
     lr_dpo      = float(os.environ.get("LR_DPO",   "5e-5"))
     beta        = float(os.environ.get("BETA",      "0.1"))
-    no_4bit     = os.environ.get("NO_4BIT",    "0") == "1"
     force_cpt   = os.environ.get("FORCE_CPT",   "0") == "1"
     force_qlora = os.environ.get("FORCE_QLORA", "0") == "1"
     force_dpo   = os.environ.get("FORCE_DPO",   "0") == "1"
@@ -442,7 +437,6 @@ def main() -> None:
             lr_lora=lr_lora,
             lr_dpo=lr_dpo,
             beta=beta,
-            no_4bit=no_4bit,
             force_cpt=force_cpt,
             force_qlora=force_qlora,
             force_dpo=force_dpo,

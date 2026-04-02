@@ -40,7 +40,7 @@ Optional env vars (with defaults):
   LR_LORA         QLoRA learning rate              [2e-4]
   LR_DPO          DPO learning rate                [5e-5]
   BETA            DPO beta                         [0.1]
-  NO_4BIT         disable 4-bit quantization (0/1) [0]
+
   GITHUB_REPO     scripts repo URL                 [https://github.com/shikaku2/lora-trainer]
   GH_TOKEN        GitHub token for private repo clone (optional)
 """
@@ -198,7 +198,6 @@ lr_cpt        = env("LR_CPT",   "1e-4")
 lr_lora       = env("LR_LORA",  "2e-4")
 lr_dpo        = env("LR_DPO",   "5e-5")
 beta          = env("BETA",     "0.1")
-no_4bit       = env("NO_4BIT",  "0") == "1"
 
 training_data_repo = f"{hf_repo}-training-data"
 
@@ -410,7 +409,7 @@ pod_env = {
     "LR_LORA":            str(lr_lora),
     "LR_DPO":             str(lr_dpo),
     "BETA":               str(beta),
-    "NO_4BIT":            "1" if no_4bit else "0",
+
     "HF_HUB_ENABLE_HF_TRANSFER": "1",
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     **({ "CUDA_LAUNCH_BLOCKING": os.environ["CUDA_LAUNCH_BLOCKING"] }

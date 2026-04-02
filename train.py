@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 6
+VERSION = 7
 
 import argparse
 import json
@@ -62,14 +62,13 @@ def run_axolotl(config_path: str):
 
 def base_config(args) -> dict:
     """Common axolotl config fields for LoRA-based training."""
-    use_4bit = not args.no_4bit
     cfg = {
         "base_model":        args.model,
         "model_type":        "AutoModelForCausalLM",
         "tokenizer_type":    "AutoTokenizer",
         "trust_remote_code": True,
-        "load_in_4bit":      use_4bit,
-        "adapter":           "qlora" if use_4bit else "lora",
+        "load_in_8bit":      True,
+        "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
         "lora_dropout":      0.0,
@@ -219,7 +218,6 @@ def main():
         p.add_argument("--output",      required=True)
         p.add_argument("--epochs",      type=int,   default=1)
         p.add_argument("--max-seq-len", type=int,   default=2048, dest="max_seq_len")
-        p.add_argument("--no-4bit",     action="store_true",      dest="no_4bit")
         p.add_argument("--rank",        type=int,   default=16)
 
     p_cpt = sub.add_parser("cpt",   help="Continued pre-training on plain text")
