@@ -437,6 +437,7 @@ def _create_fresh_pod(base_image: str) -> str:
                 "cloudType":          "SECURE",
                 "gpuCount":           1,
                 "containerDiskInGb":  container_disk_gb,
+                "volumeInGb":         0,
                 "env":                pod_env,
                 "dockerEntrypoint":   startup_entrypoint,
             })
