@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 5
+VERSION = 6
 
 logging.basicConfig(
     level=logging.INFO,
@@ -368,25 +368,8 @@ def run_pipeline(
 # Main
 # ----------------------------------------------------------------
 
-def _debug_env() -> None:
-    log.info("=== pod_entrypoint.py version %d ===", VERSION)
-    for cmd in [
-        ["which", "axolotl"],
-        ["axolotl", "--version"],
-        [sys.executable, "-c", "import axolotl; print(axolotl.__version__)"],
-        [sys.executable, "-c", "import axolotl.cli.main; print('axolotl.cli OK')"],
-        ["pip", "show", "axolotl"],
-    ]:
-        try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-            result = (out.stdout + out.stderr).strip()
-            log.info("[env] %s → %s", " ".join(cmd), result or "(no output)")
-        except Exception as e:
-            log.info("[env] %s → ERROR: %s", " ".join(cmd), e)
-
-
 def main() -> None:
-    _debug_env()
+    log.info("=== pod_entrypoint.py version %d ===", VERSION)
     hf_token    = os.environ["HF_WRITE_TOKEN"]
     hf_repo     = os.environ["HF_REPO"]
     data_repo   = os.environ["TRAINING_DATA_REPO"]

@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 7
+VERSION = 8
 
 import argparse
 import json
@@ -27,12 +27,6 @@ import yaml
 
 def gpu_check():
     print(f"train.py version {VERSION}")
-    for cmd in [
-        ["which", "axolotl"],
-        ["ls", "/workspace/axolotl/src/axolotl/cli/"],
-    ]:
-        out = subprocess.run(cmd, capture_output=True, text=True)
-        print(f"  {' '.join(cmd)} → {(out.stdout + out.stderr).strip()}")
     import torch
     if not torch.cuda.is_available():
         print("ERROR: No GPU detected — aborting.")
@@ -180,7 +174,27 @@ def cmd_qlora(args):
 def cmd_dpo(args):
     gpu_check()
 
-    # Dataset format: {"prompt": "...", "chosen": "...", "rejected": "..."}
+    # axolotl's chatml.intel DPO type expects {system, question, chosen, rejected}.
+    # Our data has {prompt, chosen, rejected} — remap before writing config.
+    dpo_jsonl = str(Path(args.data).with_suffix("")) + "_axolotl.jsonl"
+    records = []
+    with open(args.data, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            records.append({
+                "system":   "",
+                "question": r["prompt"],
+                "chosen":   r["chosen"],
+                "rejected": r["rejected"],
+            })
+    with open(dpo_jsonl, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    print(f"  DPO: {len(records)} pairs → {dpo_jsonl}")
+
     cfg = base_config(args)
     cfg["learning_rate"]     = args.lr
     cfg["rl"]                = "dpo"
@@ -190,9 +204,9 @@ def cmd_dpo(args):
     cfg["max_length"]        = args.max_seq_len
     cfg["max_prompt_length"] = args.max_seq_len // 2
     cfg["datasets"] = [{
-        "path":    str(args.data),
+        "path":    dpo_jsonl,
         "ds_type": "json",
-        "type":    "user_defined.default",
+        "type":    "chatml.intel",
     }]
 
     with tempfile.NamedTemporaryFile(
