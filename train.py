@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 1
+VERSION = 2
 
 import argparse
 import json
@@ -27,6 +27,10 @@ import yaml
 
 def gpu_check():
     print(f"train.py version {VERSION}")
+    for cmd in [["which", "axolotl"], ["axolotl", "--version"],
+                [sys.executable, "-c", "import axolotl; print(axolotl.__version__)"]]:
+        out = subprocess.run(cmd, capture_output=True, text=True)
+        print(f"  {' '.join(cmd)} → {(out.stdout + out.stderr).strip()}")
     import torch
     if not torch.cuda.is_available():
         print("ERROR: No GPU detected — aborting.")
