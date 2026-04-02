@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 5
+VERSION = 6
 
 import argparse
 import json
@@ -98,12 +98,6 @@ def base_config(args) -> dict:
         "report_to":                     "none",
         "output_dir":                    str(args.output),
     }
-    # Native LoRA kernel optimizations (replaces unsloth plugin; no extra deps,
-    # single-GPU only, supported on llama/mistral/qwen2/gemma families)
-    if use_4bit:
-        cfg["lora_mlp_kernel"] = True
-        cfg["lora_qkv_kernel"] = True
-        cfg["lora_o_kernel"]   = True
     return cfg
 
 
