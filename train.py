@@ -34,7 +34,7 @@ def gpu_check():
 
 def run_axolotl(config_path: str):
     """Launch axolotl training with the given YAML config."""
-    cmd = ["accelerate", "launch", "-m", "axolotl.cli.train", config_path]
+    cmd = ["axolotl", "train", config_path]
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -42,7 +42,7 @@ def run_axolotl(config_path: str):
         sys.exit(result.returncode)
 
 
-def base_config(args, use_unsloth: bool = True) -> dict:
+def base_config(args) -> dict:
     """Common axolotl config fields for LoRA-based training."""
     use_4bit = not args.no_4bit
     cfg = {
@@ -51,7 +51,6 @@ def base_config(args, use_unsloth: bool = True) -> dict:
         "tokenizer_type":    "AutoTokenizer",
         "trust_remote_code": True,
         "load_in_4bit":      use_4bit,
-        "load_in_8bit":      False,
         "adapter":           "qlora" if use_4bit else "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
@@ -64,21 +63,29 @@ def base_config(args, use_unsloth: bool = True) -> dict:
         "num_epochs":                    args.epochs,
         "micro_batch_size":              1,
         "gradient_accumulation_steps":   8,
-        "optimizer":                     "adamw_8bit",
+        "optimizer":                     "adamw_bnb_8bit",
         "lr_scheduler":                  "cosine",
         "warmup_steps":                  10,
         "weight_decay":                  0.01,
+        "max_grad_norm":                 1.0,
         "logging_steps":                 5,
         "save_steps":                    50,
         "save_total_limit":              2,
-        "bf16":                          True,
+        "bf16":                          "auto",
         "fp16":                          False,
+        "flash_attention":               True,
+        "gradient_checkpointing":        True,
+        "pad_to_sequence_len":           True,
         "seed":                          42,
         "report_to":                     "none",
         "output_dir":                    str(args.output),
     }
-    if use_unsloth and use_4bit:
-        cfg["plugins"] = ["axolotl.integrations.unsloth.UnslothPlugin"]
+    # Native LoRA kernel optimizations (replaces unsloth plugin; no extra deps,
+    # single-GPU only, supported on llama/mistral/qwen2/gemma families)
+    if use_4bit:
+        cfg["lora_mlp_kernel"] = True
+        cfg["lora_qkv_kernel"] = True
+        cfg["lora_o_kernel"]   = True
     return cfg
 
 
@@ -109,7 +116,7 @@ def cmd_cpt(args):
     cpt_jsonl = str(Path(args.data).with_suffix("")) + "_axolotl.jsonl"
     cpt_text_to_jsonl(args.data, args.max_seq_len, cpt_jsonl)
 
-    cfg = base_config(args, use_unsloth=True)
+    cfg = base_config(args)
     cfg["learning_rate"] = args.lr
     cfg["sample_packing"] = True   # efficient packing for CPT
     cfg["datasets"] = [{
@@ -135,7 +142,7 @@ def cmd_cpt(args):
 def cmd_qlora(args):
     gpu_check()
 
-    cfg = base_config(args, use_unsloth=True)
+    cfg = base_config(args)
     cfg["learning_rate"] = args.lr
     cfg["datasets"] = [{
         "path":    str(args.data),
@@ -162,20 +169,19 @@ def cmd_qlora(args):
 def cmd_dpo(args):
     gpu_check()
 
-    # Unsloth does not support DPO — use plain axolotl+TRL without the plugin.
     # Dataset format: {"prompt": "...", "chosen": "...", "rejected": "..."}
-    cfg = base_config(args, use_unsloth=False)
-    cfg["learning_rate"]    = args.lr
-    cfg["rl"]               = "dpo"
-    cfg["dpo_beta"]         = args.beta
-    cfg["lora_model_dir"]   = str(args.adapter)
-    cfg["warmup_steps"]     = 5
-    cfg["max_length"]       = args.max_seq_len
+    cfg = base_config(args)
+    cfg["learning_rate"]     = args.lr
+    cfg["rl"]                = "dpo"
+    cfg["rl_beta"]           = args.beta
+    cfg["lora_model_dir"]    = str(args.adapter)
+    cfg["warmup_steps"]      = 5
+    cfg["max_length"]        = args.max_seq_len
     cfg["max_prompt_length"] = args.max_seq_len // 2
     cfg["datasets"] = [{
         "path":    str(args.data),
         "ds_type": "json",
-        "type":    "user_defined",
+        "type":    "user_defined.default",
     }]
 
     with tempfile.NamedTemporaryFile(
