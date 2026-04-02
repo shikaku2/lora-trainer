@@ -469,29 +469,9 @@ startup_entrypoint = [
 ]
 
 if state:
-    # ── Restart: patch existing pod with latest code + updated env, then resume ──
+    # ── Restart: just start the stopped pod — entrypoint pulls fresh code from GitHub ──
     pod_id = state["pod_id"]
-    print(f"\nPatching pod {pod_id} (pulling latest scripts from {github_repo})...")
-    patch_ok = False
-    try:
-        _rest("PATCH", f"/pods/{pod_id}", {
-            "imageName":        base_image,
-            "env":              pod_env,
-            "dockerEntrypoint": startup_entrypoint,
-        })
-        print(f"  Pod patched.")
-        patch_ok = True
-    except urllib.error.HTTPError as e:
-        print(f"  PATCH failed (HTTP {e.code}) — pod may be gone, creating fresh pod.")
-    except Exception as e:
-        print(f"  PATCH failed ({e}) — pod may be gone, creating fresh pod.")
-
-    if not patch_ok:
-        clear_state()
-        pod_id = _create_fresh_pod(base_image)
-        state = None  # skip the start block below, fresh pod starts automatically
-
-    # Try to start with retries; if GPU is gone, tear down and create a fresh pod
+    print(f"\nResuming pod {pod_id} (entrypoint will pull latest code from {github_repo})...")
     started = False
     for attempt, delay in enumerate([0] + _RETRY_DELAYS, 1):
         if delay:
