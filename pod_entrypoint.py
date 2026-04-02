@@ -38,7 +38,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,28 +59,46 @@ RUNPOD_GQL  = "https://api.runpod.io/graphql"
 def _gql(query: str) -> dict:
     api_key = os.environ.get("RUNPOD_API_KEY", "")
     req = urllib.request.Request(
-        f"{RUNPOD_GQL}?api_key={api_key}",
+        RUNPOD_GQL,
         data=json.dumps({"query": query}).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}" # Use Authorization header for API key
+        },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            response_data = json.loads(r.read())
+            if 'errors' in response_data:
+                log.error("GraphQL errors: %s", response_data['errors'])
+                raise RuntimeError(f"GraphQL errors: {response_data['errors']}")
+            return response_data
+    except urllib.error.HTTPError as e:
+        log.error("GraphQL HTTP error %s: %s", e.code, e.read().decode())
+        raise
+    except Exception as e:
+        log.error("GraphQL request failed: %s", e)
+        raise
 
 
 def terminate_pod() -> None:
     pod_id  = os.environ.get("RUNPOD_POD_ID")
     api_key = os.environ.get("RUNPOD_API_KEY")
     if not pod_id or not api_key:
-        log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot self-terminate")
+        log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot self-terminate.")
         return
     try:
-        _gql(f'mutation {{ podTerminate(input: {{podId: "{pod_id}"}}) {{ id }} }}')
-        log.info("Terminated pod %s", pod_id)
+        for attempt in range(3):
+            try:
+                log.info("Attempting to terminate pod %s (attempt %d)...", pod_id, attempt + 1)
+                _gql(f'mutation {{ podTerminate(input: {{podId: "{pod_id}"}}) {{ id }} }}')
+                log.info("Terminated pod %s.", pod_id)
+                return
+            except Exception:
+                time.sleep(5)
     except Exception as e:
-        log.error("Failed to terminate pod: %s", e)
-
-
+        log.error("Failed to terminate pod %s: %s", pod_id, e)
 def stop_pod() -> None:
     """Stop (pause) the pod on failure."""
     pod_id  = os.environ.get("RUNPOD_POD_ID")
@@ -88,9 +106,15 @@ def stop_pod() -> None:
     if not pod_id or not api_key:
         log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot stop pod")
         return
-    try:
-        _gql(f'mutation {{ podStop(input: {{podId: "{pod_id}"}}) {{ id desiredStatus }} }}')
-        log.info("Stopped pod %s", pod_id)
+    try: # Use Authorization header for API key
+        for attempt in range(3):
+            try:
+                log.info("Attempting to stop pod %s (attempt %d)...", pod_id, attempt + 1)
+                _gql(f'mutation {{ podStop(input: {{podId: "{pod_id}"}}) {{ id desiredStatus }} }}')
+                log.info("Stopped pod %s.", pod_id)
+                return
+            except Exception:
+                time.sleep(5)
     except Exception as e:
         log.error("Failed to stop pod: %s", e)
 
@@ -342,6 +366,22 @@ def run_pipeline(
 
     log.info("Pipeline complete in %.1fs", time.time() - t_total)
 
+    # Upload a success indicator file
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=hf_token)
+        api.create_repo(hf_repo, repo_type="model", exist_ok=True, private=True)
+        api.upload_file(
+            path_or_fileobj=io.BytesIO(b"Training pipeline completed successfully."),
+            path_in_repo="SUCCESS.txt",
+            repo_id=hf_repo,
+            repo_type="model",
+            commit_message="Training pipeline completed successfully",
+        )
+        log.info("Uploaded SUCCESS.txt to %s", hf_repo)
+    except Exception as e:
+        log.warning("Failed to upload SUCCESS.txt to %s: %s", hf_repo, e)
+
 
 # ----------------------------------------------------------------
 # Main
@@ -439,6 +479,8 @@ if __name__ == "__main__":
         log.error("Pipeline failed:\n%s", err_text)
         if hf_repo and hf_token:
             upload_error_log(hf_repo, hf_token, err_text)
+        else:
+            log.error("Cannot upload error log: HF_REPO or HF_WRITE_TOKEN not set.")
     finally:
         if success:
             if data_repo and hf_token:

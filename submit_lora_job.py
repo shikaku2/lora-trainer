@@ -457,7 +457,7 @@ def _create_fresh_pod(base_image: str) -> str:
 # Create pod (fresh) or patch + resume existing pod (restart)
 # ----------------------------------------------------------------
 gh_token   = os.environ.get("GH_TOKEN", "")
-base_image = "axolotlai/axolotl:main-latest"
+base_image = resolve_image_digest("axolotlai/axolotl:main-latest", gh_token)
 
 # Inject token into clone URL for private repos, e.g. https://TOKEN@github.com/...
 _clone_url = (github_repo or "").replace("https://", f"https://{gh_token}@") if gh_token else (github_repo or "")
@@ -525,34 +525,47 @@ print(f"  Dashboard:   https://www.runpod.io/console/pods/{pod_id}")
 # ----------------------------------------------------------------
 print("\nWaiting for pod to complete...")
 start = time.time()
-last_status = None
+last_status = ""
+POLLING_TIMEOUT_SECONDS = 24 * 3600 # 24 hours
+pod_final_status = None # To store the status when the loop breaks
+
 while True:
     time.sleep(20)
     elapsed = int(time.time() - start)
+
+    if elapsed > POLLING_TIMEOUT_SECONDS:
+        print(f"\n[{elapsed:5d}s] Polling timed out after {POLLING_TIMEOUT_SECONDS} seconds.")
+        pod_final_status = "TIMED_OUT"
+        break
+
     try:
         pod_info = _rest("GET", f"/pods/{pod_id}")
         if pod_info is None:
             print(f"\n[{elapsed:5d}s] Pod terminated (no longer found)")
+            pod_final_status = "TERMINATED" # Assume terminated if not found
             break
-        status = pod_info.get("desiredStatus") or pod_info.get("lastStatusChange") or "RUNNING"
+        status = pod_info.get("desiredStatus") or pod_info.get("runtime", {}).get("status") or "UNKNOWN"
         if status != last_status:
             print(f"[{elapsed:5d}s] {status}")
             last_status = status
         else:
             print(f"[{elapsed:5d}s] {status}", end="\r")
-        if status in ("EXITED", "TERMINATED", "DEAD", "STOPPED"):
+
+        if status in ("EXITED", "TERMINATED", "DEAD", "STOPPED", "PAUSED"):
             print()
+            pod_final_status = status
             break
     except Exception as e:
         print(f"\n[{elapsed:5d}s] Status check error: {e} — pod may have terminated")
+        pod_final_status = "UNKNOWN_ERROR"
         break
-
 # ----------------------------------------------------------------
 # Check result via HF
 # ----------------------------------------------------------------
 print(f"\nChecking HuggingFace repo for results...")
 success = False
 try:
+    explicit_error_logged = False
     api = HfApi(token=hf_token)
 
     try:
@@ -560,7 +573,10 @@ try:
     except Exception:
         files = []
 
-    if "pod_error.log" in files:
+    if "SUCCESS.txt" in files:
+        print(f"  SUCCESS.txt found in {hf_repo}. Training complete!")
+        success = True
+    elif "pod_error.log" in files:
         print("\n  !! Pod reported an error. Log:\n")
         log_path = api.hf_hub_download(
             repo_id=hf_repo,
@@ -572,15 +588,21 @@ try:
             print(f.read())
         api.delete_file("pod_error.log", repo_id=hf_repo, repo_type="model",
                         commit_message="remove error log")
-    elif any("adapter_model" in f for f in files):
+        explicit_error_logged = True
+    elif any("adapter_model" in f for f in files): # Fallback if SUCCESS.txt isn't explicitly uploaded
         print(f"  Adapter found at https://huggingface.co/{hf_repo}")
-        print("  Training complete!")
+        print("  Training complete (no explicit SUCCESS.txt found, assuming success).")
         success = True
     else:
-        print(f"  No adapter found in {hf_repo} — training may have failed silently.")
+        print(f"  No SUCCESS.txt, pod_error.log, or adapter found in {hf_repo}.")
+        if pod_final_status in ("STOPPED", "PAUSED"):
+            print(f"  Pod was paused. This usually indicates a failure within the pod that wasn't explicitly logged.")
+        elif pod_final_status in ("TERMINATED", "EXITED"):
+            print(f"  Pod terminated without clear success or error log. This is unexpected.")
+        else:
+            print(f"  Pod status: {pod_final_status}. Training may have failed silently or encountered an unknown issue.")
 except Exception as e:
     print(f"  Could not check HF repo: {e}")
-
 # ----------------------------------------------------------------
 # Cleanup on success / instructions on failure
 # ----------------------------------------------------------------
@@ -593,7 +615,7 @@ if success:
         print(f"  Pod {pod_id} already gone ({e}).")
     clear_state()
     print(f"  {STATE_FILE} cleared.")
-else:
+elif not explicit_error_logged: # Only suggest rerun if no explicit error log was found
     print(f"\n  Pod is paused. Rerun this script to retry with the latest Docker image.")
     print(f"  To start completely fresh: rm {STATE_FILE}")
     sys.exit(1)
