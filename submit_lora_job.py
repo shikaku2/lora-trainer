@@ -457,7 +457,7 @@ def _create_fresh_pod(base_image: str) -> str:
 # Create pod (fresh) or patch + resume existing pod (restart)
 # ----------------------------------------------------------------
 gh_token   = os.environ.get("GH_TOKEN", "")
-base_image = "axolotlai/axolotl-cloud:main-latest"
+base_image = "axolotlai/axolotl:main-latest"
 
 # Inject token into clone URL for private repos, e.g. https://TOKEN@github.com/...
 _clone_url = (github_repo or "").replace("https://", f"https://{gh_token}@") if gh_token else (github_repo or "")
