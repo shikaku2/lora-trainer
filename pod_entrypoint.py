@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 3
+VERSION = 4
 
 logging.basicConfig(
     level=logging.INFO,
@@ -138,6 +138,7 @@ def hf_upload(local_dir: Path, repo_id: str, token: str, commit_message: str) ->
         repo_id=repo_id,
         repo_type="model",
         commit_message=commit_message,
+        ignore_patterns=["README.md"],  # axolotl writes README with local dataset paths that HF rejects
     )
     log.info("Uploaded %s → https://huggingface.co/%s", local_dir.name, repo_id)
 
