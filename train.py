@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 3
+VERSION = 4
 
 import argparse
 import json
@@ -49,12 +49,22 @@ def gpu_check():
 
 def run_axolotl(config_path: str):
     """Launch axolotl training with the given YAML config."""
-    cmd = ["axolotl", "train", config_path]
-    print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        print(f"ERROR: axolotl exited with code {result.returncode}")
-        sys.exit(result.returncode)
+    # Try invocations in order until one works. The py3.11 conda env may need
+    # to be activated for axolotl.cli to be importable, so try conda run first.
+    attempts = [
+        ["conda", "run", "-n", "py3.11", "axolotl", "train", config_path, "--launcher", "python"],
+        ["conda", "run", "-n", "py3.11", "axolotl", "train", config_path],
+        ["axolotl", "train", config_path, "--launcher", "python"],
+        ["axolotl", "train", config_path],
+    ]
+    for cmd in attempts:
+        print(f"Trying: {' '.join(cmd)}")
+        result = subprocess.run(cmd)
+        if result.returncode == 0:
+            return
+        print(f"  → exit {result.returncode}, trying next...")
+    print(f"ERROR: all axolotl invocations failed")
+    sys.exit(1)
 
 
 def base_config(args) -> dict:
