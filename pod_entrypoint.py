@@ -35,10 +35,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 2
+VERSION = 3
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,36 +50,29 @@ log = logging.getLogger("pod")
 SCRIPT_DIR = Path(__file__).parent
 TRAIN      = SCRIPT_DIR / "train.py"
 
-RUNPOD_GQL  = "https://api.runpod.io/graphql"
+RUNPOD_REST = "https://rest.runpod.io/v1"
 
 
 # ----------------------------------------------------------------
-# RunPod GraphQL helpers (REST /stop returns 403 from within the pod)
+# RunPod REST helpers
 # ----------------------------------------------------------------
 
-def _gql(query: str) -> dict:
+def _rest(method: str, path: str) -> None:
+    """Make a bodyless RunPod REST call. No Content-Type header — bodyless POST/DELETE."""
     api_key = os.environ.get("RUNPOD_API_KEY", "")
+    pod_id  = os.environ.get("RUNPOD_POD_ID", "")
+    log.info("RunPod REST %s %s (pod=%s key=%s...)", method, path, pod_id, api_key[:8] if api_key else "MISSING")
     req = urllib.request.Request(
-        RUNPOD_GQL,
-        data=json.dumps({"query": query}).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}" # Use Authorization header for API key
-        },
-        method="POST",
+        f"{RUNPOD_REST}{path}",
+        headers={"Authorization": f"Bearer {api_key}"},
+        method=method,
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            response_data = json.loads(r.read())
-            if 'errors' in response_data:
-                log.error("GraphQL errors: %s", response_data['errors'])
-                raise RuntimeError(f"GraphQL errors: {response_data['errors']}")
-            return response_data
+            body = r.read()
+            log.info("RunPod REST %s %s → %d %s", method, path, r.status, body[:200])
     except urllib.error.HTTPError as e:
-        log.error("GraphQL HTTP error %s: %s", e.code, e.read().decode())
-        raise
-    except Exception as e:
-        log.error("GraphQL request failed: %s", e)
+        log.error("RunPod REST %s %s → HTTP %d: %s", method, path, e.code, e.read().decode())
         raise
 
 
@@ -86,19 +80,15 @@ def terminate_pod() -> None:
     pod_id  = os.environ.get("RUNPOD_POD_ID")
     api_key = os.environ.get("RUNPOD_API_KEY")
     if not pod_id or not api_key:
-        log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot self-terminate.")
+        log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot self-terminate")
         return
     try:
-        for attempt in range(3):
-            try:
-                log.info("Attempting to terminate pod %s (attempt %d)...", pod_id, attempt + 1)
-                _gql(f'mutation {{ podTerminate(input: {{podId: "{pod_id}"}}) {{ id }} }}')
-                log.info("Terminated pod %s.", pod_id)
-                return
-            except Exception:
-                time.sleep(5)
+        _rest("DELETE", f"/pods/{pod_id}")
+        log.info("Terminated pod %s", pod_id)
     except Exception as e:
-        log.error("Failed to terminate pod %s: %s", pod_id, e)
+        log.error("Failed to terminate pod: %s", e)
+
+
 def stop_pod() -> None:
     """Stop (pause) the pod on failure."""
     pod_id  = os.environ.get("RUNPOD_POD_ID")
@@ -106,15 +96,9 @@ def stop_pod() -> None:
     if not pod_id or not api_key:
         log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot stop pod")
         return
-    try: # Use Authorization header for API key
-        for attempt in range(3):
-            try:
-                log.info("Attempting to stop pod %s (attempt %d)...", pod_id, attempt + 1)
-                _gql(f'mutation {{ podStop(input: {{podId: "{pod_id}"}}) {{ id desiredStatus }} }}')
-                log.info("Stopped pod %s.", pod_id)
-                return
-            except Exception:
-                time.sleep(5)
+    try:
+        _rest("POST", f"/pods/{pod_id}/stop")
+        log.info("Stopped pod %s", pod_id)
     except Exception as e:
         log.error("Failed to stop pod: %s", e)
 
