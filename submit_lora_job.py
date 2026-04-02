@@ -25,8 +25,9 @@ Optional env vars (with defaults):
   DPO_FILE        DPO preference pairs (jsonl)     [dpo.jsonl]
   HF_REPO         HuggingFace repo for final adapter  [shikaku2/magistral-alastor-lora]
   MODEL_PATH      base model HF repo or local path [unsloth/Magistral-Small-2509]
-  DOCKER_IMAGE    pod container image              [ghcr.io/shikaku2/lora-trainer:latest]
   GPU_TYPE        RunPod GPU type ID               [NVIDIA A40]
+  GITHUB_REPO     URL of this repo for script injection [https://github.com/shikaku2/lora-trainer3]
+  GH_TOKEN        GitHub token (required for private repos, used to clone at pod startup)
   EPOCHS_CPT      CPT epochs                       [1]
   EPOCHS_LORA     QLoRA epochs                     [3]
   EPOCHS_DPO      DPO epochs                       [1]
@@ -40,7 +41,8 @@ Optional env vars (with defaults):
   LR_DPO          DPO learning rate                [5e-5]
   BETA            DPO beta                         [0.1]
   NO_4BIT         disable 4-bit quantization (0/1) [0]
-  GH_TOKEN        GitHub token for GHCR digest resolution (optional, for private images)
+  GITHUB_REPO     scripts repo URL                 [https://github.com/shikaku2/lora-trainer]
+  GH_TOKEN        GitHub token for private repo clone (optional)
 """
 
 import base64
@@ -182,7 +184,7 @@ lora_file     = env("LORA_FILE",  "lora.txt")
 dpo_file      = env("DPO_FILE",   "dpo.jsonl")
 hf_repo       = env("HF_REPO",   "shikaku2/magistral-alastor-lora")
 model_path    = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
-docker_image  = env("DOCKER_IMAGE", "ghcr.io/shikaku2/lora-trainer:latest")
+github_repo   = env("GITHUB_REPO", "https://github.com/shikaku2/lora-trainer")
 gpu_type      = env("GPU_TYPE",   "NVIDIA A40")
 max_seq_len   = int(env("MAX_SEQ_LEN",  "2048"))
 epochs_cpt    = int(env("EPOCHS_CPT",   "1"))
@@ -225,7 +227,7 @@ def resolve_image_digest(image: str, gh_token: str = "") -> str:
     Returns the original image string unchanged if resolution fails.
     """
     if "@sha256:" in image:
-        return image  # already pinned to a digest
+        return image  # already base_image to a digest
 
     # Split base:tag
     last_segment = image.split("/")[-1]
@@ -421,7 +423,7 @@ pod_env = {
 _RETRY_DELAYS = [2, 4, 8]  # seconds between attempts before giving up
 
 
-def _create_fresh_pod(pinned: str) -> str:
+def _create_fresh_pod(base_image: str) -> str:
     """Create a brand-new pod. Retries with _RETRY_DELAYS on failure. Returns pod_id."""
     for attempt, delay in enumerate([0] + _RETRY_DELAYS, 1):
         if delay:
@@ -430,12 +432,13 @@ def _create_fresh_pod(pinned: str) -> str:
         try:
             pod = _rest("POST", "/pods", {
                 "name":               f"lora-training-{int(time.time())}",
-                "imageName":          pinned,
+                "imageName":          base_image,
                 "gpuTypeIds":         [gpu_type],
                 "cloudType":          "SECURE",
                 "gpuCount":           1,
                 "containerDiskInGb":  container_disk_gb,
                 "env":                pod_env,
+                "dockerEntrypoint":   startup_entrypoint,
             })
             pid = pod["id"]
             print(f"  Pod created: {pid}")
@@ -453,18 +456,27 @@ def _create_fresh_pod(pinned: str) -> str:
 # ----------------------------------------------------------------
 # Create pod (fresh) or patch + resume existing pod (restart)
 # ----------------------------------------------------------------
-gh_token = os.environ.get("GH_TOKEN", "")
-pinned   = resolve_image_digest(docker_image, gh_token)
+gh_token   = os.environ.get("GH_TOKEN", "")
+base_image = "axolotlai/axolotl-cloud:main-latest"
+
+# Inject token into clone URL for private repos, e.g. https://TOKEN@github.com/...
+_clone_url = (github_repo or "").replace("https://", f"https://{gh_token}@") if gh_token else (github_repo or "")
+startup_entrypoint = [
+    "bash", "-c",
+    f"git clone {_clone_url} /workspace/lora-trainer && "
+    "python3 -u /workspace/lora-trainer/pod_entrypoint.py"
+]
 
 if state:
-    # ── Restart: patch existing pod with latest image + updated env, then resume ──
+    # ── Restart: patch existing pod with latest code + updated env, then resume ──
     pod_id = state["pod_id"]
-    if pinned != docker_image:
-        print(f"\nPatching pod {pod_id} with {pinned}...")
-    else:
-        print(f"\nPatching pod {pod_id} with {docker_image} (could not resolve digest — re-pull not guaranteed)...")
+    print(f"\nPatching pod {pod_id} (pulling latest scripts from {github_repo})...")
     try:
-        _rest("PATCH", f"/pods/{pod_id}", {"imageName": pinned, "env": pod_env})
+        _rest("PATCH", f"/pods/{pod_id}", {
+            "imageName":        base_image,
+            "env":              pod_env,
+            "dockerEntrypoint": startup_entrypoint,
+        })
         print(f"  Pod patched.")
     except urllib.error.HTTPError as e:
         print(f"ERROR: Failed to patch pod {pod_id}: HTTP {e.code}: {e.read().decode()}")
@@ -496,11 +508,11 @@ if state:
         except Exception as e:
             print(f"  Could not terminate old pod ({e}) — continuing anyway.")
         clear_state()
-        pod_id = _create_fresh_pod(pinned)
+        pod_id = _create_fresh_pod(base_image)
 else:
     # ── Fresh run: create pod ──
-    print(f"\nCreating RunPod pod ({gpu_type}, {pinned})...")
-    pod_id = _create_fresh_pod(pinned)
+    print(f"\nCreating RunPod pod ({gpu_type}, {base_image})...")
+    pod_id = _create_fresh_pod(base_image)
 
 # Save state immediately so we can recover on interrupt or failure
 save_state({"pod_id": pod_id})
