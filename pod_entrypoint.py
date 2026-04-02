@@ -47,23 +47,20 @@ log = logging.getLogger("pod")
 SCRIPT_DIR = Path(__file__).parent
 TRAIN      = SCRIPT_DIR / "train.py"
 
-RUNPOD_REST = "https://rest.runpod.io/v1"
+RUNPOD_GQL  = "https://api.runpod.io/graphql"
 
 
 # ----------------------------------------------------------------
-# RunPod REST helpers
+# RunPod GraphQL helpers (REST /stop returns 403 from within the pod)
 # ----------------------------------------------------------------
 
-def _runpod(method: str, path: str, body=None):
+def _gql(query: str) -> dict:
     api_key = os.environ.get("RUNPOD_API_KEY", "")
     req = urllib.request.Request(
-        f"{RUNPOD_REST}{path}",
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-        },
-        method=method,
+        f"{RUNPOD_GQL}?api_key={api_key}",
+        data=json.dumps({"query": query}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
@@ -76,22 +73,22 @@ def terminate_pod() -> None:
         log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot self-terminate")
         return
     try:
-        _runpod("DELETE", f"/pods/{pod_id}")
+        _gql(f'mutation {{ podTerminate(input: {{podId: "{pod_id}"}}) {{ id }} }}')
         log.info("Terminated pod %s", pod_id)
     except Exception as e:
         log.error("Failed to terminate pod: %s", e)
 
 
 def stop_pod() -> None:
-    """Stop (pause) the pod on failure so the network volume is preserved."""
+    """Stop (pause) the pod on failure."""
     pod_id  = os.environ.get("RUNPOD_POD_ID")
     api_key = os.environ.get("RUNPOD_API_KEY")
     if not pod_id or not api_key:
         log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot stop pod")
         return
     try:
-        _runpod("POST", f"/pods/{pod_id}/stop")
-        log.info("Stopped pod %s (network volume preserved — rerun submit_lora_job.py to retry)", pod_id)
+        _gql(f'mutation {{ podStop(input: {{podId: "{pod_id}"}}) {{ id desiredStatus }} }}')
+        log.info("Stopped pod %s", pod_id)
     except Exception as e:
         log.error("Failed to stop pod: %s", e)
 
@@ -423,10 +420,11 @@ if __name__ == "__main__":
         if hf_repo and hf_token:
             upload_error_log(hf_repo, hf_token, err_text)
     finally:
-        if data_repo and hf_token:
-            delete_training_data_repo(data_repo, hf_token)
         if exit_code == 0:
+            if data_repo and hf_token:
+                delete_training_data_repo(data_repo, hf_token)
             terminate_pod()
         else:
+            # On failure: preserve training data for retry, stop (not delete) pod
             stop_pod()
     sys.exit(exit_code)

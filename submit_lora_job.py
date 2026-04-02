@@ -463,6 +463,7 @@ base_image = "axolotlai/axolotl:main-latest"
 _clone_url = (github_repo or "").replace("https://", f"https://{gh_token}@") if gh_token else (github_repo or "")
 startup_entrypoint = [
     "bash", "-c",
+    "rm -rf /workspace/lora-trainer && "
     f"git clone {_clone_url} /workspace/lora-trainer && "
     "python3 -u /workspace/lora-trainer/pod_entrypoint.py"
 ]
