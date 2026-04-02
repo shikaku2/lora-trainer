@@ -12,6 +12,8 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
+VERSION = 1
+
 import argparse
 import json
 import os
@@ -24,6 +26,7 @@ import yaml
 
 
 def gpu_check():
+    print(f"train.py version {VERSION}")
     import torch
     if not torch.cuda.is_available():
         print("ERROR: No GPU detected — aborting.")

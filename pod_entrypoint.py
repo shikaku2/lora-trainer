@@ -38,6 +38,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+VERSION = 1
+
 logging.basicConfig(
     level=logging.INFO,
     format="[pod] %(asctime)s %(levelname)s: %(message)s",
@@ -345,7 +347,25 @@ def run_pipeline(
 # Main
 # ----------------------------------------------------------------
 
+def _debug_env() -> None:
+    log.info("=== pod_entrypoint.py version %d ===", VERSION)
+    for cmd in [
+        ["which", "axolotl"],
+        ["axolotl", "--version"],
+        [sys.executable, "-c", "import axolotl; print(axolotl.__version__)"],
+        [sys.executable, "-c", "import axolotl.cli.main; print('axolotl.cli OK')"],
+        ["pip", "show", "axolotl"],
+    ]:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = (out.stdout + out.stderr).strip()
+            log.info("[env] %s → %s", " ".join(cmd), result or "(no output)")
+        except Exception as e:
+            log.info("[env] %s → ERROR: %s", " ".join(cmd), e)
+
+
 def main() -> None:
+    _debug_env()
     hf_token    = os.environ["HF_WRITE_TOKEN"]
     hf_repo     = os.environ["HF_REPO"]
     data_repo   = os.environ["TRAINING_DATA_REPO"]
@@ -408,10 +428,10 @@ if __name__ == "__main__":
     data_repo = os.environ.get("TRAINING_DATA_REPO", "")
     hf_token  = os.environ.get("HF_WRITE_TOKEN", "")
     hf_repo   = os.environ.get("HF_REPO", "")
-    exit_code = 1
+    success = False
     try:
         main()
-        exit_code = 0
+        success = True
         log.info("Pipeline complete.")
     except Exception:
         import traceback
@@ -420,11 +440,12 @@ if __name__ == "__main__":
         if hf_repo and hf_token:
             upload_error_log(hf_repo, hf_token, err_text)
     finally:
-        if exit_code == 0:
+        if success:
             if data_repo and hf_token:
                 delete_training_data_repo(data_repo, hf_token)
             terminate_pod()
         else:
             # On failure: preserve training data for retry, stop (not delete) pod
             stop_pod()
-    sys.exit(exit_code)
+    # Always exit 0 — RunPod restarts containers that exit non-zero, causing a loop
+    sys.exit(0)
