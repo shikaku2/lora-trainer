@@ -419,7 +419,7 @@ print("\nEstimating disk requirements...")
 model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb = estimate_disk_gb(
     model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank,
 )
-container_disk_gb = max(20, int(total_gb * 1.25))
+container_disk_gb = max(80, int(total_gb * 1.25))
 
 if model_gb:
     print(f"  Model weights:  {model_gb:.1f} GB")
