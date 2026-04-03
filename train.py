@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 14
+VERSION = 13
 
 import argparse
 import json
@@ -192,9 +192,9 @@ def cmd_dpo(args):
                 messages.append({"role": "system", "content": r["system"]})
             messages.append({"role": "user", "content": r["prompt"]})
             records.append({
-                "prompt":   messages,
-                "chosen":   [{"role": "assistant", "content": r["chosen"]}],
-                "rejected": [{"role": "assistant", "content": r["rejected"]}],
+                "messages": messages,
+                "chosen":   {"role": "assistant", "content": r["chosen"]},
+                "rejected": {"role": "assistant", "content": r["rejected"]},
             })
     with open(dpo_jsonl, "w", encoding="utf-8") as f:
         for r in records:
@@ -213,9 +213,6 @@ def cmd_dpo(args):
         "path":    dpo_jsonl,
         "ds_type": "json",
         "type":    "chat_template.default",
-        "dataset_kwargs": {
-            "add_special_tokens": False,
-        }
     }]
 
     with tempfile.NamedTemporaryFile(
