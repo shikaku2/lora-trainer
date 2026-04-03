@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 12
+VERSION = 13
 
 import argparse
 import json
@@ -200,13 +200,14 @@ def cmd_dpo(args):
     print(f"  DPO: {len(records)} pairs → {dpo_jsonl}")
 
     cfg = base_config(args)
-    cfg["learning_rate"]     = args.lr
-    cfg["rl"]                = "dpo"
-    cfg["rl_beta"]           = args.beta
-    cfg["lora_model_dir"]    = str(args.adapter)
-    cfg["warmup_steps"]      = 5
-    cfg["max_length"]        = args.max_seq_len
-    cfg["max_prompt_length"] = args.max_seq_len // 2
+    cfg["learning_rate"]              = args.lr
+    cfg["rl"]                         = "dpo"
+    cfg["rl_beta"]                    = args.beta
+    cfg["lora_model_dir"]             = str(args.adapter)
+    cfg["merge_adapters_by_default"]  = False   # don't merge+save the 24GB base model
+    cfg["warmup_steps"]               = 5
+    cfg["max_length"]                 = args.max_seq_len
+    cfg["max_prompt_length"]          = args.max_seq_len // 2
     cfg["datasets"] = [{
         "path":    dpo_jsonl,
         "ds_type": "json",
@@ -224,6 +225,15 @@ def cmd_dpo(args):
         run_axolotl(config_path)
     finally:
         os.unlink(config_path)
+
+    # Belt-and-suspenders: remove any merged base model weights axolotl may have
+    # written to output_dir — we only want the adapter files for HF upload.
+    output_path = Path(args.output)
+    for pattern in ["model.safetensors", "model-*.safetensors",
+                    "pytorch_model.bin", "pytorch_model-*.bin"]:
+        for f in output_path.glob(pattern):
+            print(f"  Removing merged model file {f.name} ({f.stat().st_size // 1024 // 1024}MB)")
+            f.unlink()
 
 
 def main():
