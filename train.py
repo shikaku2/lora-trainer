@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 10
+VERSION = 11
 
 import argparse
 import json
@@ -177,6 +177,8 @@ def cmd_dpo(args):
     # axolotl's chatml.intel DPO type expects {system, question, chosen, rejected}.
     # Our data has {prompt, chosen, rejected} — remap before writing config.
     dpo_jsonl = str(Path(args.data).with_suffix("")) + "_axolotl.jsonl"
+    # Build prompt string using [INST] format so TRL can find the boundary
+    # when tokenized with mistral_common. Format: [INST] SYSTEM\n\nUSER [/INST]
     records = []
     with open(args.data, encoding="utf-8") as f:
         for line in f:
@@ -184,9 +186,11 @@ def cmd_dpo(args):
             if not line:
                 continue
             r = json.loads(line)
+            system = r.get("system", "")
+            user   = r["prompt"]
+            prompt = f"[INST] {system}\n\n{user} [/INST]" if system else f"[INST] {user} [/INST]"
             records.append({
-                "system":   r.get("system", ""),
-                "question": r["prompt"],
+                "prompt":   prompt,
                 "chosen":   r["chosen"],
                 "rejected": r["rejected"],
             })
@@ -206,7 +210,7 @@ def cmd_dpo(args):
     cfg["datasets"] = [{
         "path":    dpo_jsonl,
         "ds_type": "json",
-        "type":    "chatml.intel",
+        "type":    "bradley_terry.json",
     }]
 
     with tempfile.NamedTemporaryFile(
