@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 6
+VERSION = 7
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,7 +59,7 @@ RUNPOD_REST = "https://rest.runpod.io/v1"
 
 def _rest(method: str, path: str) -> None:
     """Make a bodyless RunPod REST call. No Content-Type header — bodyless POST/DELETE."""
-    api_key = os.environ.get("RUNPOD_API_KEY", "")
+    api_key = os.environ.get("RUNPOD_ACCT_KEY", "")  # account key, not pod-scoped RUNPOD_API_KEY
     pod_id  = os.environ.get("RUNPOD_POD_ID", "")
     log.info("RunPod REST %s %s (pod=%s key=%s...)", method, path, pod_id, api_key[:8] if api_key else "MISSING")
     req = urllib.request.Request(
@@ -78,7 +78,7 @@ def _rest(method: str, path: str) -> None:
 
 def terminate_pod() -> None:
     pod_id  = os.environ.get("RUNPOD_POD_ID")
-    api_key = os.environ.get("RUNPOD_API_KEY")
+    api_key = os.environ.get("RUNPOD_ACCT_KEY")
     if not pod_id or not api_key:
         log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot self-terminate")
         return
@@ -92,7 +92,7 @@ def terminate_pod() -> None:
 def stop_pod() -> None:
     """Stop (pause) the pod on failure."""
     pod_id  = os.environ.get("RUNPOD_POD_ID")
-    api_key = os.environ.get("RUNPOD_API_KEY")
+    api_key = os.environ.get("RUNPOD_ACCT_KEY")
     if not pod_id or not api_key:
         log.warning("RUNPOD_POD_ID or RUNPOD_API_KEY not set — cannot stop pod")
         return

@@ -465,7 +465,7 @@ pod_env = {
     "HF_REPO":            hf_repo,
     "TRAINING_DATA_REPO": training_data_repo,
     "MODEL_PATH":         model_path,
-    "RUNPOD_API_KEY":     api_key,
+    "RUNPOD_ACCT_KEY":    api_key,
     "EPOCHS_CPT":         str(epochs_cpt),
     "EPOCHS_LORA":        str(epochs_lora),
     "EPOCHS_DPO":         str(epochs_dpo),
