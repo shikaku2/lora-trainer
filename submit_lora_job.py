@@ -22,7 +22,7 @@ Required env vars:
 Optional env vars (with defaults):
   CPT_FILE        plain-text CPT corpus            [cpt.txt]
   LORA_FILE       dialogue examples (txt or jsonl) [lora.txt]
-  DPO_FILE        DPO preference pairs (jsonl)     [dpo.jsonl]
+  DPO_FILE        DPO preference pairs (txt or jsonl) [dpo.txt]
   HF_REPO         HuggingFace repo for final adapter  [shikaku2/magistral-alastor-lora]
   MODEL_PATH      base model HF repo or local path [unsloth/Magistral-Small-2509]
   GPU_TYPE        RunPod GPU type ID               [NVIDIA A40]
@@ -173,6 +173,70 @@ def parse_lora_examples(text_path: str) -> bytes:
     return ("\n".join(lines) + "\n").encode()
 
 
+def parse_dpo_examples(text_path: str) -> bytes:
+    """
+    Parse dpo.txt format into JSONL bytes.
+
+    File format:
+        ====...====
+        EXAMPLE N
+        ====...====
+        PROMPT:
+        SYSTEM: <system text>
+
+        USER: <user text>
+
+        CHOSEN:
+        <chosen response>
+
+        REJECTED:
+        <rejected response>
+
+    Output: one {"system": ..., "prompt": ..., "chosen": ..., "rejected": ...} per line.
+    """
+    text = Path(text_path).read_text()
+    # Split on separator lines (=====...)
+    blocks = re.split(r"={10,}\n?", text)
+
+    records = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i].strip()
+        # Skip header blocks (EXAMPLE N lines and empty blocks)
+        if not block or re.match(r"EXAMPLE\s+\d+", block):
+            i += 1
+            continue
+
+        # This block should start with PROMPT:
+        if not block.startswith("PROMPT:"):
+            i += 1
+            continue
+
+        prompt_m  = re.search(r"^PROMPT:\s*\nSYSTEM:\s*(.+?)(?=\nUSER:)", block,
+                               re.DOTALL | re.MULTILINE)
+        user_m    = re.search(r"^USER:\s*(.+?)$", block, re.DOTALL | re.MULTILINE)
+        chosen_m  = re.search(r"^CHOSEN:\s*\n(.+?)(?=\nREJECTED:|\Z)", block,
+                               re.DOTALL | re.MULTILINE)
+        rejected_m = re.search(r"^REJECTED:\s*\n(.+?)$", block, re.DOTALL | re.MULTILINE)
+
+        if user_m and chosen_m and rejected_m:
+            system = prompt_m.group(1).strip() if prompt_m else ""
+            records.append(json.dumps({
+                "system":   system,
+                "prompt":   user_m.group(1).strip(),
+                "chosen":   chosen_m.group(1).strip(),
+                "rejected": rejected_m.group(1).strip(),
+            }, ensure_ascii=False))
+        i += 1
+
+    if not records:
+        print(f"ERROR: No DPO examples parsed from {text_path}")
+        sys.exit(1)
+
+    print(f"  Parsed {len(records)} DPO pairs from {Path(text_path).name}")
+    return ("\n".join(records) + "\n").encode()
+
+
 # ----------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------
@@ -181,7 +245,7 @@ hf_token      = env("HF_WRITE_TOKEN",  required=True)
 
 cpt_file      = env("CPT_FILE",   "cpt.txt")
 lora_file     = env("LORA_FILE",  "lora.txt")
-dpo_file      = env("DPO_FILE",   "dpo.jsonl")
+dpo_file      = env("DPO_FILE",   "dpo.txt")
 hf_repo       = env("HF_REPO",   "shikaku2/magistral-alastor-lora")
 model_path    = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
 github_repo   = env("GITHUB_REPO", "https://github.com/shikaku2/lora-trainer")
@@ -341,7 +405,12 @@ else:
     lora_bytes = parse_lora_examples(lora_file)
 
 print(f"  DPO pairs:     {dpo_file}")
-dpo_bytes = Path(dpo_file).read_bytes()
+if dpo_file.endswith(".jsonl"):
+    dpo_bytes = Path(dpo_file).read_bytes()
+    count = sum(1 for l in dpo_bytes.decode().splitlines() if l.strip())
+    print(f"  (JSONL — {count} records)")
+else:
+    dpo_bytes = parse_dpo_examples(dpo_file)
 
 # ----------------------------------------------------------------
 # Disk estimate
@@ -350,7 +419,7 @@ print("\nEstimating disk requirements...")
 model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb = estimate_disk_gb(
     model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank,
 )
-container_disk_gb = max(20, int(total_gb * 1.25))
+container_disk_gb = max(80, int(total_gb * 1.25))
 
 if model_gb:
     print(f"  Model weights:  {model_gb:.1f} GB")

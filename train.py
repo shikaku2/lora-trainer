@@ -185,7 +185,7 @@ def cmd_dpo(args):
                 continue
             r = json.loads(line)
             records.append({
-                "system":   "",
+                "system":   r.get("system", ""),
                 "question": r["prompt"],
                 "chosen":   r["chosen"],
                 "rejected": r["rejected"],
