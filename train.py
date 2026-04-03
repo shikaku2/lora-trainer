@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 9
+VERSION = 10
 
 import argparse
 import json
@@ -81,8 +81,7 @@ def base_config(args) -> dict:
         "weight_decay":                  0.01,
         "max_grad_norm":                 1.0,
         "logging_steps":                 5,
-        "save_steps":                    50,
-        "save_total_limit":              2,
+        "save_strategy":                 "no",
         "bf16":                          "auto",
         "fp16":                          False,
         "flash_attention":               True,
