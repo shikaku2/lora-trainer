@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 13
+VERSION = 12
 
 import argparse
 import json
@@ -177,9 +177,8 @@ def cmd_dpo(args):
     # axolotl's chatml.intel DPO type expects {system, question, chosen, rejected}.
     # Our data has {prompt, chosen, rejected} — remap before writing config.
     dpo_jsonl = str(Path(args.data).with_suffix("")) + "_axolotl.jsonl"
-    # chat_template.default uses the model's actual chat template for tokenization,
-    # so prompt and prompt+chosen are tokenized consistently (no mismatch warning).
-    # Format: messages list for context, chosen/rejected as single assistant message objects.
+    # chatml.prompt_pairs expects {prompt, chosen, rejected} as plain strings
+    # and wraps them in ChatML tokens itself — do not pre-format the prompt.
     records = []
     with open(args.data, encoding="utf-8") as f:
         for line in f:
@@ -187,14 +186,13 @@ def cmd_dpo(args):
             if not line:
                 continue
             r = json.loads(line)
-            messages = []
-            if r.get("system"):
-                messages.append({"role": "system", "content": r["system"]})
-            messages.append({"role": "user", "content": r["prompt"]})
+            system = r.get("system", "")
+            user   = r["prompt"]
+            prompt = f"{system}\n\n{user}" if system else user
             records.append({
-                "messages": messages,
-                "chosen":   {"role": "assistant", "content": r["chosen"]},
-                "rejected": {"role": "assistant", "content": r["rejected"]},
+                "prompt":   prompt,
+                "chosen":   r["chosen"],
+                "rejected": r["rejected"],
             })
     with open(dpo_jsonl, "w", encoding="utf-8") as f:
         for r in records:
@@ -212,7 +210,7 @@ def cmd_dpo(args):
     cfg["datasets"] = [{
         "path":    dpo_jsonl,
         "ds_type": "json",
-        "type":    "chat_template.default",
+        "type":    "chatml.prompt_pairs",
     }]
 
     with tempfile.NamedTemporaryFile(
