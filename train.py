@@ -60,8 +60,9 @@ def base_config(args) -> dict:
         "base_model":        args.model,
         "model_type":        "AutoModelForCausalLM",
         "tokenizer_type":    "AutoTokenizer",
-        "trust_remote_code": True,
-        "load_in_8bit":      True,
+        "trust_remote_code":           True,
+        "tokenizer_use_mistral_common": True,
+        "load_in_8bit":                True,
         "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
@@ -122,7 +123,6 @@ def cmd_cpt(args):
 
     cfg = base_config(args)
     cfg["learning_rate"] = args.lr
-    cfg["tokenizer_use_mistral_common"] = True
     cfg["sample_packing"] = True   # efficient packing for CPT
     cfg["datasets"] = [{
         "path":    cpt_jsonl,
@@ -149,7 +149,6 @@ def cmd_qlora(args):
 
     cfg = base_config(args)
     cfg["learning_rate"] = args.lr
-    cfg["tokenizer_use_mistral_common"] = True
     cfg["datasets"] = [{
         "path":    str(args.data),
         "ds_type": "json",
@@ -193,9 +192,9 @@ def cmd_dpo(args):
                 messages.append({"role": "system", "content": r["system"]})
             messages.append({"role": "user", "content": r["prompt"]})
             records.append({
-                "messages": messages,
-                "chosen":   {"role": "assistant", "content": r["chosen"]},
-                "rejected": {"role": "assistant", "content": r["rejected"]},
+                "prompt":   messages,
+                "chosen":   [{"role": "assistant", "content": r["chosen"]}],
+                "rejected": [{"role": "assistant", "content": r["rejected"]}],
             })
     with open(dpo_jsonl, "w", encoding="utf-8") as f:
         for r in records:
@@ -214,6 +213,9 @@ def cmd_dpo(args):
         "path":    dpo_jsonl,
         "ds_type": "json",
         "type":    "chat_template.default",
+        "dataset_kwargs": {
+            "add_special_tokens": False,
+        }
     }]
 
     with tempfile.NamedTemporaryFile(
