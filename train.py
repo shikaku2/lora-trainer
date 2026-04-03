@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 13
+VERSION = 14
 
 import argparse
 import json
@@ -60,9 +60,8 @@ def base_config(args) -> dict:
         "base_model":        args.model,
         "model_type":        "AutoModelForCausalLM",
         "tokenizer_type":    "AutoTokenizer",
-        "trust_remote_code":           True,
-        "tokenizer_use_mistral_common": True,
-        "load_in_8bit":                True,
+        "trust_remote_code": True,
+        "load_in_8bit":      True,
         "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
@@ -123,6 +122,7 @@ def cmd_cpt(args):
 
     cfg = base_config(args)
     cfg["learning_rate"] = args.lr
+    cfg["tokenizer_use_mistral_common"] = True
     cfg["sample_packing"] = True   # efficient packing for CPT
     cfg["datasets"] = [{
         "path":    cpt_jsonl,
@@ -149,6 +149,7 @@ def cmd_qlora(args):
 
     cfg = base_config(args)
     cfg["learning_rate"] = args.lr
+    cfg["tokenizer_use_mistral_common"] = True
     cfg["datasets"] = [{
         "path":    str(args.data),
         "ds_type": "json",
