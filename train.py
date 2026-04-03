@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 8
+VERSION = 9
 
 import argparse
 import json
@@ -60,8 +60,9 @@ def base_config(args) -> dict:
         "base_model":        args.model,
         "model_type":        "AutoModelForCausalLM",
         "tokenizer_type":    "AutoTokenizer",
-        "trust_remote_code": True,
-        "load_in_8bit":      True,
+        "trust_remote_code":           True,
+        "tokenizer_use_mistral_common": True,
+        "load_in_8bit":                True,
         "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
