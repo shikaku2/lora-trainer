@@ -17,16 +17,17 @@ Usage:
   If output.gguf is omitted, overwrites lora.gguf in-place.
 """
 
+import mmap
 import struct
 import shutil
 import sys
 from pathlib import Path
 
 
-def read_gguf_string_kv(data: bytes, key: str) -> tuple[str, int, int]:
+def read_gguf_string_kv(data, key: str) -> tuple[str, int, int]:
     """
     Find a string KV entry in GGUF metadata. Returns (value, val_offset, val_len).
-    Raises KeyError if not found.
+    Works with bytes or mmap. Raises KeyError if not found.
     """
     key_b = key.encode()
     n_kv = struct.unpack_from('<Q', data, 16)[0]
@@ -70,10 +71,14 @@ def read_gguf_string_kv(data: bytes, key: str) -> tuple[str, int, int]:
 
 
 def patch_gguf_arch(base_path: Path, lora_path: Path, out_path: Path):
-    base_data = base_path.read_bytes()
-    lora_data = lora_path.read_bytes()
+    # Read only the metadata header of the base GGUF via mmap — avoids loading
+    # the full multi-GB model file into RAM just to get the arch string.
+    with open(base_path, 'rb') as f:
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        base_arch, _, _ = read_gguf_string_kv(mm, 'general.architecture')
+        mm.close()
 
-    base_arch, _, _ = read_gguf_string_kv(base_data, 'general.architecture')
+    lora_data = lora_path.read_bytes()
     lora_arch, val_off, val_len = read_gguf_string_kv(lora_data, 'general.architecture')
 
     print(f"Base arch: {base_arch}")
