@@ -150,10 +150,11 @@ def cmd_qlora(args):
     cfg = base_config(args)
     cfg["learning_rate"] = args.lr
     cfg["datasets"] = [{
-        "path":    str(args.data),
-        "ds_type": "json",
-        "type":    "completion",
-        "field":   "text",
+        "path":           str(args.data),
+        "ds_type":        "json",
+        "type":           "chat_template",
+        "field_messages": "messages",
+        "roles_to_train": ["assistant"],
     }]
     if args.adapter:
         cfg["lora_model_dir"] = str(args.adapter)
@@ -174,11 +175,9 @@ def cmd_qlora(args):
 def cmd_dpo(args):
     gpu_check()
 
-    # axolotl's chatml.intel DPO type expects {system, question, chosen, rejected}.
-    # Our data has {prompt, chosen, rejected} — remap before writing config.
+    # chat_template.default expects {messages: [{role, content}...], chosen, rejected}
+    # where messages is the prompt context and chosen/rejected are plain response strings.
     dpo_jsonl = str(Path(args.data).with_suffix("")) + "_axolotl.jsonl"
-    # chatml.prompt_pairs expects {prompt, chosen, rejected} as plain strings
-    # and wraps them in ChatML tokens itself — do not pre-format the prompt.
     records = []
     with open(args.data, encoding="utf-8") as f:
         for line in f:
@@ -187,10 +186,12 @@ def cmd_dpo(args):
                 continue
             r = json.loads(line)
             system = r.get("system", "")
-            user   = r["prompt"]
-            prompt = f"{system}\n\n{user}" if system else user
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": r["prompt"]})
             records.append({
-                "prompt":   prompt,
+                "messages": messages,
                 "chosen":   r["chosen"],
                 "rejected": r["rejected"],
             })
@@ -200,6 +201,7 @@ def cmd_dpo(args):
     print(f"  DPO: {len(records)} pairs → {dpo_jsonl}")
 
     cfg = base_config(args)
+    cfg.pop("tokenizer_use_mistral_common", None)  # let chat_template.default handle tokenization
     cfg["learning_rate"]              = args.lr
     cfg["rl"]                         = "dpo"
     cfg["rl_beta"]                    = args.beta
@@ -209,9 +211,12 @@ def cmd_dpo(args):
     cfg["max_length"]                 = args.max_seq_len
     cfg["max_prompt_length"]          = args.max_seq_len // 2
     cfg["datasets"] = [{
-        "path":    dpo_jsonl,
-        "ds_type": "json",
-        "type":    "chatml.prompt_pairs",
+        "path":           dpo_jsonl,
+        "ds_type":        "json",
+        "type":           "chat_template.default",
+        "field_messages": "messages",
+        "field_chosen":   "chosen",
+        "field_rejected": "rejected",
     }]
 
     with tempfile.NamedTemporaryFile(

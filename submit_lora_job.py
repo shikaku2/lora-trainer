@@ -132,8 +132,7 @@ def parse_lora_examples(text_path: str) -> bytes:
                multi-line reply
         ---
 
-    If a SYSTEM block is present it is injected into every [INST] block.
-    Output: one {"text": "[INST] SYSTEM\\n\\nUSER [/INST] REPLY"} per line.
+    Output: one {"messages": [...]} per line, with system/user/assistant roles.
     """
     text = Path(text_path).read_text()
     blocks = re.split(r"\n(?:=====|-{2,})\n?", text)
@@ -161,8 +160,12 @@ def parse_lora_examples(text_path: str) -> bytes:
 
         user  = user_m.group(1).strip()
         reply = reply_m.group(1).strip()
-        inst  = f"{system_prompt}\n\n{user}" if system_prompt else user
-        lines.append(json.dumps({"text": f"[INST] {inst} [/INST] {reply}"}))
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system",    "content": system_prompt})
+        messages.append({"role": "user",      "content": user})
+        messages.append({"role": "assistant", "content": reply})
+        lines.append(json.dumps({"messages": messages}))
 
     if not lines:
         print(f"ERROR: No examples parsed from {text_path}")
@@ -419,7 +422,7 @@ print("\nEstimating disk requirements...")
 model_gb, adapter_gb_each, adapters_gb, data_gb, total_gb = estimate_disk_gb(
     model_path, hf_token, cpt_bytes, lora_bytes, dpo_bytes, rank,
 )
-container_disk_gb = max(80, int(total_gb * 1.25))
+container_disk_gb = max(20, int(total_gb * 1.25))
 
 if model_gb:
     print(f"  Model weights:  {model_gb:.1f} GB")
