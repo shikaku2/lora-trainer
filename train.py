@@ -251,7 +251,7 @@ def main():
     sub = parser.add_subparsers(dest="stage", required=True)
 
     def add_common(p):
-        p.add_argument("--model",       default="unsloth/Magistral-Small-2509")
+        p.add_argument("--model",       default="unsloth/gemma-4-26B-A4B-it")
         p.add_argument("--data",        required=True)
         p.add_argument("--output",      required=True)
         p.add_argument("--epochs",      type=int,   default=1)

@@ -24,7 +24,7 @@ Optional env vars (with defaults):
   LORA_FILE       dialogue examples (txt or jsonl) [lora.txt]
   DPO_FILE        DPO preference pairs (txt or jsonl) [dpo.txt]
   HF_REPO         HuggingFace repo for final adapter  [shikaku2/magistral-alastor-lora]
-  MODEL_PATH      base model HF repo or local path [unsloth/Magistral-Small-2509]
+  MODEL_PATH      base model HF repo or local path [unsloth/gemma-4-26B-A4B-it]
   GPU_TYPE        RunPod GPU type ID               [NVIDIA A40]
   GITHUB_REPO     URL of this repo for script injection [https://github.com/shikaku2/lora-trainer3]
   GH_TOKEN        GitHub token (required for private repos, used to clone at pod startup)
@@ -36,6 +36,7 @@ Optional env vars (with defaults):
   FORCE_CPT       re-run CPT even if cached (0/1)  [0]
   FORCE_QLORA     re-run QLoRA even if cached      [0]
   FORCE_DPO       re-run DPO even if cached        [0]
+  ONLY_CPT        run CPT only, skip QLoRA+DPO     [0]
   LR_CPT          CPT learning rate                [1e-4]
   LR_LORA         QLoRA learning rate              [2e-4]
   LR_DPO          DPO learning rate                [5e-5]
@@ -250,7 +251,7 @@ cpt_file      = env("CPT_FILE",   "cpt.txt")
 lora_file     = env("LORA_FILE",  "lora.txt")
 dpo_file      = env("DPO_FILE",   "dpo.txt")
 hf_repo       = env("HF_REPO",   "shikaku2/magistral-alastor-lora")
-model_path    = env("MODEL_PATH", "unsloth/Magistral-Small-2509")
+model_path    = env("MODEL_PATH", "unsloth/gemma-4-26B-A4B-it")
 github_repo   = env("GITHUB_REPO", "https://github.com/shikaku2/lora-trainer")
 gpu_type      = env("GPU_TYPE",   "NVIDIA A40")
 max_seq_len   = int(env("MAX_SEQ_LEN",  "2048"))
@@ -261,6 +262,7 @@ rank          = int(env("RANK",         "16"))
 force_cpt     = env("FORCE_CPT",   "0") == "1"
 force_qlora   = env("FORCE_QLORA", "0") == "1"
 force_dpo     = env("FORCE_DPO",   "0") == "1"
+only_cpt      = env("ONLY_CPT",    "0") == "1"
 lr_cpt        = env("LR_CPT",   "1e-4")
 lr_lora       = env("LR_LORA",  "2e-4")
 lr_dpo        = env("LR_DPO",   "5e-5")
@@ -477,6 +479,7 @@ pod_env = {
     "FORCE_CPT":          "1" if force_cpt  else "0",
     "FORCE_QLORA":        "1" if force_qlora else "0",
     "FORCE_DPO":          "1" if force_dpo   else "0",
+    "ONLY_CPT":           "1" if only_cpt   else "0",
     "LR_CPT":             str(lr_cpt),
     "LR_LORA":            str(lr_lora),
     "LR_DPO":             str(lr_dpo),

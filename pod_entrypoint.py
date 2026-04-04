@@ -231,10 +231,12 @@ def run_pipeline(
     force_cpt:   bool,
     force_qlora: bool,
     force_dpo:   bool,
+    only_cpt:    bool,
 ) -> None:
     """
     Run CPT→QLoRA→DPO.  Uploads adapter to HF after each stage.
     Skips stages whose adapter is already on HF (unless force_* is set).
+    If only_cpt is True, stops after CPT and skips QLoRA and DPO entirely.
     Raises on any failure.
     """
     hf_repo_cpt   = f"{hf_repo}-cpt"
@@ -281,6 +283,11 @@ def run_pipeline(
             raise RuntimeError(f"CPT stage failed (exit {rc})\n" + "\n".join(lines[-50:]))
         log.info("CPT done in %.1fs — uploading checkpoint...", time.time() - t0)
         hf_upload(cpt_out, hf_repo_cpt, hf_token, f"CPT adapter after {epochs_cpt} epoch(s)")
+
+    if only_cpt:
+        log.info("ONLY_CPT=1 — skipping QLoRA and DPO stages.")
+        log.info("Pipeline complete in %.1fs", time.time() - t_total)
+        return
 
     # ----------------------------------------------------------------
     # Stage 2 — QLoRA
@@ -373,7 +380,7 @@ def main() -> None:
     hf_token    = os.environ["HF_WRITE_TOKEN"]
     hf_repo     = os.environ["HF_REPO"]
     data_repo   = os.environ["TRAINING_DATA_REPO"]
-    model_path  = os.environ.get("MODEL_PATH",   "unsloth/Magistral-Small-2509")
+    model_path  = os.environ.get("MODEL_PATH",   "unsloth/gemma-4-26B-A4B-it")
     epochs_cpt  = int(os.environ.get("EPOCHS_CPT",  "1"))
     epochs_lora = int(os.environ.get("EPOCHS_LORA", "3"))
     epochs_dpo  = int(os.environ.get("EPOCHS_DPO",  "1"))
@@ -386,6 +393,7 @@ def main() -> None:
     force_cpt   = os.environ.get("FORCE_CPT",   "0") == "1"
     force_qlora = os.environ.get("FORCE_QLORA", "0") == "1"
     force_dpo   = os.environ.get("FORCE_DPO",   "0") == "1"
+    only_cpt    = os.environ.get("ONLY_CPT",    "0") == "1"
 
     # Download training data from the temporary HF repo
     with tempfile.TemporaryDirectory(prefix="lora_pod_") as workdir:
@@ -423,6 +431,7 @@ def main() -> None:
             force_cpt=force_cpt,
             force_qlora=force_qlora,
             force_dpo=force_dpo,
+            only_cpt=only_cpt,
         )
 
 
