@@ -87,7 +87,7 @@ def base_config(args) -> dict:
         # is_multimodal is auto-detected from transformers MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES
         # and ORed with user setting — cannot be forced False. axolotl 0.16.1 also requires
         # is_multimodal=True for gemma4 to inject mm_token_type_ids (needed even for text-only training).
-        "load_in_8bit":                True,
+        "load_in_4bit":                True,
         "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
