@@ -61,16 +61,18 @@ def base_config(args) -> dict:
         "model_type":        "AutoModelForCausalLM",
         "tokenizer_type":    "AutoTokenizer",
         "trust_remote_code":           True,
-        "is_multimodal":               False,
+        # is_multimodal is auto-detected from transformers MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES
+        # and ORed with user setting — cannot be forced False. axolotl 0.16.1 also requires
+        # is_multimodal=True for gemma4 to inject mm_token_type_ids (needed even for text-only training).
         "load_in_8bit":                True,
         "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
         "lora_dropout":      0.0,
-        # Regex scoped to language_model only — prevents LoRA from being applied
-        # to vision encoder layers that share the same short names (q_proj etc.)
-        # Actual HF weight path: language_model.model.layers.X.self_attn.q_proj
-        "lora_target_modules": r"language_model\.model\.layers\.[\d]+\.(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj",
+        # Regex scoped to language_model only — prevents LoRA from being applied to vision layers.
+        # Gemma4 weight prefix: model.language_model.model.layers.X.self_attn.q_proj
+        # MoE expert blocks use gate_up_proj/down_proj (fused); v_proj may not exist (attention_k_eq_v).
+        "lora_target_modules": r"model\.language_model\.model\.layers\.[\d]+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)",
         "sequence_len":                  args.max_seq_len,
         "num_epochs":                    args.epochs,
         "micro_batch_size":              1,
@@ -149,7 +151,7 @@ def cmd_qlora(args):
 
     cfg = base_config(args)
     cfg["learning_rate"]  = args.lr
-    cfg["chat_template"]  = "mistral_v7_tekken"
+    cfg["chat_template"]  = "gemma4"
     cfg["train_on_inputs"] = True  # diagnostic: bypass roles_to_train masking
     cfg["datasets"] = [{
         "path":           str(args.data),
@@ -203,7 +205,7 @@ def cmd_dpo(args):
 
     cfg = base_config(args)
     cfg["learning_rate"]              = args.lr
-    cfg["chat_template"]              = "mistral_v7_tekken"
+    cfg["chat_template"]              = "gemma4"
     cfg["rl"]                         = "dpo"
     cfg["rl_beta"]                    = args.beta
     cfg["lora_model_dir"]             = str(args.adapter)
