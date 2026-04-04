@@ -12,6 +12,8 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
+VERSION = 14
+
 import argparse
 import json
 import os
