@@ -69,7 +69,8 @@ def base_config(args) -> dict:
         "lora_dropout":      0.0,
         # Regex scoped to language_model only — prevents LoRA from being applied
         # to vision encoder layers that share the same short names (q_proj etc.)
-        "lora_target_modules": r"model\.language_model\.layers\.[\d]+\.(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj",
+        # Actual HF weight path: language_model.model.layers.X.self_attn.q_proj
+        "lora_target_modules": r"language_model\.model\.layers\.[\d]+\.(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj",
         "sequence_len":                  args.max_seq_len,
         "num_epochs":                    args.epochs,
         "micro_batch_size":              1,
