@@ -61,14 +61,18 @@ def base_config(args) -> dict:
         "model_type":        "AutoModelForCausalLM",
         "tokenizer_type":    "AutoTokenizer",
         "trust_remote_code":           True,
+        "is_multimodal":               False,
         "load_in_8bit":                True,
         "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
         "lora_dropout":      0.0,
-        "lora_target_modules": [
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
+        # Regex scoped to language_model only — prevents LoRA from being applied
+        # to vision encoder layers that share the same short names (q_proj etc.)
+        "lora_target_modules": r"model\.language_model\.layers\.[\d]+\.(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj",
+        # Freeze vision tower explicitly
+        "unfrozen_parameters": [
+            r"model\.language_model\..*",
         ],
         "sequence_len":                  args.max_seq_len,
         "num_epochs":                    args.epochs,
@@ -149,12 +153,12 @@ def cmd_qlora(args):
     cfg = base_config(args)
     cfg["learning_rate"]  = args.lr
     cfg["chat_template"]  = "mistral_v7_tekken"
+    cfg["train_on_inputs"] = True  # diagnostic: bypass roles_to_train masking
     cfg["datasets"] = [{
         "path":           str(args.data),
         "ds_type":        "json",
         "type":           "chat_template",
         "field_messages": "messages",
-        "roles_to_train": ["assistant"],
     }]
     if args.adapter:
         cfg["lora_model_dir"] = str(args.adapter)
