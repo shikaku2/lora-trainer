@@ -69,10 +69,12 @@ def base_config(args) -> dict:
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
         "lora_dropout":      0.0,
-        # Regex scoped to language_model only — prevents LoRA from being applied to vision layers.
-        # Gemma4 weight prefix: model.language_model.model.layers.X.self_attn.q_proj
-        # MoE expert blocks use gate_up_proj/down_proj (fused); v_proj may not exist (attention_k_eq_v).
-        "lora_target_modules": r"model\.language_model\.model\.layers\.[\d]+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)",
+        # Regex scoped to language_model only — prevents LoRA from touching vision layers.
+        # Verified against model.safetensors.index.json:
+        #   model.language_model.layers.X.self_attn.{q,k,v,o}_proj
+        #   model.language_model.layers.X.mlp.{gate,up,down}_proj       (dense/shared layers)
+        #   model.language_model.layers.X.experts.{gate_up,down}_proj   (MoE expert blocks, fused)
+        "lora_target_modules": r"model\.language_model\.layers\.[\d]+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj|experts\.(gate_up|down)_proj)",
         "sequence_len":                  args.max_seq_len,
         "num_epochs":                    args.epochs,
         "micro_batch_size":              1,
