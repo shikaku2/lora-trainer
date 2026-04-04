@@ -70,10 +70,6 @@ def base_config(args) -> dict:
         # Regex scoped to language_model only — prevents LoRA from being applied
         # to vision encoder layers that share the same short names (q_proj etc.)
         "lora_target_modules": r"model\.language_model\.layers\.[\d]+\.(mlp|self_attn)\.(up|down|gate|q|k|v|o)_proj",
-        # Freeze vision tower explicitly
-        "unfrozen_parameters": [
-            r"model\.language_model\..*",
-        ],
         "sequence_len":                  args.max_seq_len,
         "num_epochs":                    args.epochs,
         "micro_batch_size":              1,
