@@ -56,6 +56,7 @@ def run_axolotl(config_path: str):
 
 def base_config(args) -> dict:
     """Common axolotl config fields for LoRA-based training."""
+    num_gpus = int(os.environ.get("NUM_GPUS", "1"))
     cfg = {
         "base_model":        args.model,
         "model_type":        "AutoModelForCausalLM",
@@ -95,6 +96,10 @@ def base_config(args) -> dict:
         "report_to":                     "none",
         "output_dir":                    str(args.output),
     }
+    if num_gpus > 1:
+        # Model parallelism across GPUs — required for 8-bit quantized models
+        # (bitsandbytes int8 doesn't support DDP gradient sync)
+        cfg["device_map"] = "auto"
     return cfg
 
 

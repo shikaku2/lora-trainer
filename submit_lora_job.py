@@ -26,6 +26,7 @@ Optional env vars (with defaults):
   HF_REPO         HuggingFace repo for final adapter  [shikaku2/magistral-alastor-lora]
   MODEL_PATH      base model HF repo or local path [unsloth/gemma-4-26B-A4B-it]
   GPU_TYPE        RunPod GPU type ID               [NVIDIA A40]
+  NUM_GPUS        number of GPUs per pod           [1]
   GITHUB_REPO     URL of this repo for script injection [https://github.com/shikaku2/lora-trainer3]
   GH_TOKEN        GitHub token (required for private repos, used to clone at pod startup)
   EPOCHS_CPT      CPT epochs                       [1]
@@ -254,6 +255,7 @@ hf_repo       = env("HF_REPO",   "shikaku2/magistral-alastor-lora")
 model_path    = env("MODEL_PATH", "unsloth/gemma-4-26B-A4B-it")
 github_repo   = env("GITHUB_REPO", "https://github.com/shikaku2/lora-trainer")
 gpu_type      = env("GPU_TYPE",   "NVIDIA A40")
+num_gpus      = int(env("NUM_GPUS", "1"))
 max_seq_len   = int(env("MAX_SEQ_LEN",  "2048"))
 epochs_cpt    = int(env("EPOCHS_CPT",   "1"))
 epochs_lora   = int(env("EPOCHS_LORA",  "3"))
@@ -480,6 +482,7 @@ pod_env = {
     "FORCE_QLORA":        "1" if force_qlora else "0",
     "FORCE_DPO":          "1" if force_dpo   else "0",
     "ONLY_CPT":           "1" if only_cpt   else "0",
+    "NUM_GPUS":           str(num_gpus),
     "LR_CPT":             str(lr_cpt),
     "LR_LORA":            str(lr_lora),
     "LR_DPO":             str(lr_dpo),
@@ -509,7 +512,7 @@ def _create_fresh_pod(base_image: str) -> str:
                 "imageName":          base_image,
                 "gpuTypeIds":         [gpu_type],
                 "cloudType":          "SECURE",
-                "gpuCount":           1,
+                "gpuCount":           num_gpus,
                 "containerDiskInGb":  container_disk_gb,
                 "volumeInGb":         0,
                 "env":                pod_env,
