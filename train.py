@@ -41,14 +41,36 @@ def run_axolotl(config_path: str):
     The image installs axolotl as an editable install from /workspace/axolotl/src
     but the .pth file is broken, so axolotl.cli is unreachable without explicitly
     adding the source to PYTHONPATH.
+
+    When NUM_GPUS > 1, writes an accelerate config that disables DDP so that
+    device_map=auto can spread the model across GPUs in a single process.
+    Without this, accelerate defaults to multi_gpu_launcher (DDP) which loads
+    a full model copy on every rank — causing OOM on large quantized models.
     """
     env = os.environ.copy()
     src = "/workspace/axolotl/src"
     env["PYTHONPATH"] = src + (":" + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
 
+    num_gpus = int(os.environ.get("NUM_GPUS", "1"))
+    if num_gpus > 1:
+        accel_cfg = (
+            "compute_environment: LOCAL_MACHINE\n"
+            "distributed_type: 'NO'\n"
+            "num_processes: 1\n"
+            "mixed_precision: 'no'\n"
+        )
+        accel_cfg_path = Path(tempfile.NamedTemporaryFile(suffix=".yaml", prefix="accelerate_cfg_", delete=False).name)
+        accel_cfg_path.write_text(accel_cfg)
+        env["ACCELERATE_CONFIG_FILE"] = str(accel_cfg_path)
+        print(f"Multi-GPU model parallel: wrote accelerate config (distributed_type=NO) to {accel_cfg_path}")
+    else:
+        accel_cfg_path = None
+
     cmd = ["axolotl", "train", config_path]
     print(f"Running: {' '.join(cmd)}  (PYTHONPATH includes {src})")
     result = subprocess.run(cmd, env=env)
+    if accel_cfg_path:
+        accel_cfg_path.unlink(missing_ok=True)
     if result.returncode != 0:
         print(f"ERROR: axolotl exited with code {result.returncode}")
         sys.exit(result.returncode)
