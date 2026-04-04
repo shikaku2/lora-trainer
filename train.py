@@ -61,7 +61,6 @@ def base_config(args) -> dict:
         "model_type":        "AutoModelForCausalLM",
         "tokenizer_type":    "AutoTokenizer",
         "trust_remote_code":           True,
-        "tokenizer_use_mistral_common": True,
         "load_in_8bit":                True,
         "adapter":           "lora",
         "lora_r":            args.rank,
@@ -201,7 +200,6 @@ def cmd_dpo(args):
     print(f"  DPO: {len(records)} pairs → {dpo_jsonl}")
 
     cfg = base_config(args)
-    cfg.pop("tokenizer_use_mistral_common", None)  # let chat_template.default handle tokenization
     cfg["learning_rate"]              = args.lr
     cfg["rl"]                         = "dpo"
     cfg["rl_beta"]                    = args.beta
