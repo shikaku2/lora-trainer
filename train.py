@@ -12,8 +12,6 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 13
-
 import argparse
 import json
 import os
@@ -147,7 +145,8 @@ def cmd_qlora(args):
     gpu_check()
 
     cfg = base_config(args)
-    cfg["learning_rate"] = args.lr
+    cfg["learning_rate"]  = args.lr
+    cfg["chat_template"]  = "mistral_v7_tekken"
     cfg["datasets"] = [{
         "path":           str(args.data),
         "ds_type":        "json",
@@ -201,6 +200,7 @@ def cmd_dpo(args):
 
     cfg = base_config(args)
     cfg["learning_rate"]              = args.lr
+    cfg["chat_template"]              = "mistral_v7_tekken"
     cfg["rl"]                         = "dpo"
     cfg["rl_beta"]                    = args.beta
     cfg["lora_model_dir"]             = str(args.adapter)
