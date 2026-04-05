@@ -12,7 +12,7 @@ Usage:
     python train.py dpo   --model <id> --data dpo.jsonl    --output ./dpo-out  --adapter ./lora-out
 """
 
-VERSION = 14
+VERSION = 15
 
 import argparse
 import json
@@ -97,7 +97,9 @@ def base_config(args) -> dict:
         "save_strategy":                 "no",
         "bf16":                          "auto",
         "fp16":                          False,
-        "flash_attention":               True,
+        # gemma4 head_dim > 256 — flash_attn varlen_fwd only supports ≤ 256
+        "flash_attention":               False,
+        "sdp_attention":                 True,
         "gradient_checkpointing":        True,
         "pad_to_sequence_len":           True,
         "seed":                          42,
