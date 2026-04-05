@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 8
+VERSION = 9
 
 logging.basicConfig(
     level=logging.INFO,
@@ -417,8 +417,7 @@ def pip_install_extra() -> None:
     """Install packages not present in the axolotl base image."""
     import subprocess
     pkgs = [
-        "transformers>=5.5.0",  # gemma4 added in 5.5.0; axolotl image ships older version
-        "compressed-tensors",   # required for Neural Magic / llm-compressor AWQ models
+        "flash-attn-4",  # flash attn 4 supports head_dim > 256 (required for gemma4)
     ]
     log.info("pip install extra packages: %s", pkgs)
     subprocess.run(
