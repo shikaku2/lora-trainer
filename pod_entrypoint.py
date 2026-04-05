@@ -413,8 +413,22 @@ def setup_swapfile(size_gb: int = 60, path: str = "/swapfile") -> None:
 # Main
 # ----------------------------------------------------------------
 
+def pip_install_extra() -> None:
+    """Install packages not present in the axolotl base image."""
+    import subprocess
+    pkgs = [
+        "compressed-tensors",  # required for Neural Magic / llm-compressor AWQ models
+    ]
+    log.info("pip install extra packages: %s", pkgs)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--quiet"] + pkgs,
+        check=True,
+    )
+
+
 def main() -> None:
     log.info("=== pod_entrypoint.py version %d ===", VERSION)
+    pip_install_extra()
     setup_swapfile(size_gb=60)
     hf_token    = os.environ["HF_WRITE_TOKEN"]
     hf_repo     = os.environ["HF_REPO"]
