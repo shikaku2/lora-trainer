@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 9
+VERSION = 10
 
 logging.basicConfig(
     level=logging.INFO,
@@ -421,7 +421,7 @@ def pip_install_extra() -> None:
     ]
     log.info("pip install extra packages: %s", pkgs)
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet"] + pkgs,
+        [sys.executable, "-m", "pip", "install", "--quiet", "--pre"] + pkgs,
         check=True,
     )
 
