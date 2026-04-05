@@ -46,7 +46,14 @@ def run_axolotl(config_path: str):
     src = "/workspace/axolotl/src"
     env["PYTHONPATH"] = src + (":" + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
 
+    num_gpus = int(os.environ.get("NUM_GPUS", "1"))
     cmd = ["axolotl", "train", config_path]
+    if num_gpus > 1:
+        # axolotl captures unknown CLI args in ctx.args and forwards them as
+        # launcher_args to `accelerate launch`. This is the only reliable way
+        # to set --num_processes before accelerate auto-detects GPUs and spawns DDP.
+        cmd += ["--num_processes", "1", "--num_machines", "1",
+                "--mixed_precision", "no", "--dynamo_backend", "no"]
     print(f"Running: {' '.join(cmd)}  (PYTHONPATH includes {src})")
     result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
@@ -97,10 +104,9 @@ def base_config(args) -> dict:
         "output_dir":                    str(args.output),
     }
     if num_gpus > 1:
-        # Single-process model parallelism: num_processes=1 is forwarded by axolotl
-        # as --num_processes 1 to accelerate launch, preventing DDP. device_map=auto
-        # then distributes layers across all visible GPUs within that single process.
-        cfg["num_processes"] = 1
+        # device_map=auto distributes model layers across all visible GPUs.
+        # --num_processes 1 is passed as a CLI launcher arg (see run_axolotl) to
+        # prevent accelerate from spawning DDP before device_map can take effect.
         cfg["device_map"] = "auto"
     return cfg
 
