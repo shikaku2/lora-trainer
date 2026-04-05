@@ -375,13 +375,13 @@ def run_pipeline(
 # zram setup
 # ----------------------------------------------------------------
 
-def setup_zram(size_gb: int = 60) -> None:
+def setup_swapfile(size_gb: int = 60, path: str = "/swapfile") -> None:
     """
-    Enable a zram swap device to handle RAM pressure during large model loading.
-    bf16 weights (51.6GB) are temporarily held in RAM during 4-bit quantization;
-    zram gives the kernel a compressed overflow area instead of OOM-killing.
-    Uses lz4 (fast, low CPU overhead) — model weight bytes compress ~1.3-1.5x.
-    Safe to call multiple times: skips silently if zram0 is already active.
+    Create a swap file to handle RAM pressure during large model loading.
+    bf16 weights (51.6GB) temporarily spike RAM during 4-bit quantization;
+    swap gives the kernel an overflow area instead of OOM-killing the process.
+    Swap file is slower than zram but works in containers without CAP_SYS_MODULE.
+    Safe to call multiple times: skips if path is already active swap.
     """
     import subprocess
 
@@ -390,24 +390,23 @@ def setup_zram(size_gb: int = 60) -> None:
         return result.returncode, result.stdout.strip(), result.stderr.strip()
 
     # Check if already active
-    rc, out, _ = _run(["/sbin/swapon", "--show=NAME", "--noheadings"])
-    if "/dev/zram0" in out:
-        log.info("zram0 already active, skipping setup")
+    rc, out, _ = _run(["swapon", "--show=NAME", "--noheadings"])
+    if path in out:
+        log.info("swap file %s already active, skipping setup", path)
         return
 
     steps = [
-        (["/sbin/modprobe", "zram"], "load zram module"),
-        (["/bin/bash", "-c", "echo lz4 > /sys/block/zram0/comp_algorithm"], "set lz4 compression"),
-        (["/bin/bash", "-c", f"echo {size_gb}G > /sys/block/zram0/disksize"], f"set {size_gb}GB size"),
-        (["/sbin/mkswap", "/dev/zram0"], "mkswap"),
-        (["/sbin/swapon", "/dev/zram0", "-p", "100"], "swapon"),
+        (["fallocate", "-l", f"{size_gb}G", path], f"allocate {size_gb}GB swap file"),
+        (["chmod", "600", path],                   "chmod 600"),
+        (["mkswap", path],                         "mkswap"),
+        (["swapon", path, "-p", "100"],            "swapon"),
     ]
     for cmd, desc in steps:
         rc, out, err = _run(cmd)
         if rc != 0:
-            log.warning("zram setup failed at '%s': %s", desc, err)
+            log.warning("swap setup failed at '%s': %s", desc, err)
             return
-    log.info("zram swap enabled: %dGB lz4 (priority 100)", size_gb)
+    log.info("swap file enabled: %dGB at %s (priority 100)", size_gb, path)
 
 
 # ----------------------------------------------------------------
@@ -416,7 +415,7 @@ def setup_zram(size_gb: int = 60) -> None:
 
 def main() -> None:
     log.info("=== pod_entrypoint.py version %d ===", VERSION)
-    setup_zram(size_gb=60)
+    setup_swapfile(size_gb=60)
     hf_token    = os.environ["HF_WRITE_TOKEN"]
     hf_repo     = os.environ["HF_REPO"]
     data_repo   = os.environ["TRAINING_DATA_REPO"]
