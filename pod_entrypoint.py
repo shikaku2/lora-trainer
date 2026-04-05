@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 7
+VERSION = 8
 
 logging.basicConfig(
     level=logging.INFO,
@@ -372,11 +372,51 @@ def run_pipeline(
 
 
 # ----------------------------------------------------------------
+# zram setup
+# ----------------------------------------------------------------
+
+def setup_zram(size_gb: int = 60) -> None:
+    """
+    Enable a zram swap device to handle RAM pressure during large model loading.
+    bf16 weights (51.6GB) are temporarily held in RAM during 4-bit quantization;
+    zram gives the kernel a compressed overflow area instead of OOM-killing.
+    Uses lz4 (fast, low CPU overhead) — model weight bytes compress ~1.3-1.5x.
+    Safe to call multiple times: skips silently if zram0 is already active.
+    """
+    import subprocess
+
+    def _run(cmd):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+    # Check if already active
+    rc, out, _ = _run(["swapon", "--show=NAME", "--noheadings"])
+    if "/dev/zram0" in out:
+        log.info("zram0 already active, skipping setup")
+        return
+
+    steps = [
+        (["modprobe", "zram"], "load zram module"),
+        (["bash", "-c", "echo lz4 > /sys/block/zram0/comp_algorithm"], "set lz4 compression"),
+        (["bash", "-c", f"echo {size_gb}G > /sys/block/zram0/disksize"], f"set {size_gb}GB size"),
+        (["mkswap", "/dev/zram0"], "mkswap"),
+        (["swapon", "/dev/zram0", "-p", "100"], "swapon"),
+    ]
+    for cmd, desc in steps:
+        rc, out, err = _run(cmd)
+        if rc != 0:
+            log.warning("zram setup failed at '%s': %s", desc, err)
+            return
+    log.info("zram swap enabled: %dGB lz4 (priority 100)", size_gb)
+
+
+# ----------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------
 
 def main() -> None:
     log.info("=== pod_entrypoint.py version %d ===", VERSION)
+    setup_zram(size_gb=60)
     hf_token    = os.environ["HF_WRITE_TOKEN"]
     hf_repo     = os.environ["HF_REPO"]
     data_repo   = os.environ["TRAINING_DATA_REPO"]
