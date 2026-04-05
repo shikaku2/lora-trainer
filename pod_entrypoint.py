@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 10
+VERSION = 11
 
 logging.basicConfig(
     level=logging.INFO,
@@ -415,15 +415,7 @@ def setup_swapfile(size_gb: int = 60, path: str = "/swapfile") -> None:
 
 def pip_install_extra() -> None:
     """Install packages not present in the axolotl base image."""
-    import subprocess
-    pkgs = [
-        "flash-attn-4",  # flash attn 4 supports head_dim > 256 (required for gemma4)
-    ]
-    log.info("pip install extra packages: %s", pkgs)
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "--pre"] + pkgs,
-        check=True,
-    )
+    pass
 
 
 def main() -> None:
