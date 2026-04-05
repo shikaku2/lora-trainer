@@ -390,17 +390,17 @@ def setup_zram(size_gb: int = 60) -> None:
         return result.returncode, result.stdout.strip(), result.stderr.strip()
 
     # Check if already active
-    rc, out, _ = _run(["swapon", "--show=NAME", "--noheadings"])
+    rc, out, _ = _run(["/sbin/swapon", "--show=NAME", "--noheadings"])
     if "/dev/zram0" in out:
         log.info("zram0 already active, skipping setup")
         return
 
     steps = [
-        (["modprobe", "zram"], "load zram module"),
-        (["bash", "-c", "echo lz4 > /sys/block/zram0/comp_algorithm"], "set lz4 compression"),
-        (["bash", "-c", f"echo {size_gb}G > /sys/block/zram0/disksize"], f"set {size_gb}GB size"),
-        (["mkswap", "/dev/zram0"], "mkswap"),
-        (["swapon", "/dev/zram0", "-p", "100"], "swapon"),
+        (["/sbin/modprobe", "zram"], "load zram module"),
+        (["/bin/bash", "-c", "echo lz4 > /sys/block/zram0/comp_algorithm"], "set lz4 compression"),
+        (["/bin/bash", "-c", f"echo {size_gb}G > /sys/block/zram0/disksize"], f"set {size_gb}GB size"),
+        (["/sbin/mkswap", "/dev/zram0"], "mkswap"),
+        (["/sbin/swapon", "/dev/zram0", "-p", "100"], "swapon"),
     ]
     for cmd, desc in steps:
         rc, out, err = _run(cmd)
