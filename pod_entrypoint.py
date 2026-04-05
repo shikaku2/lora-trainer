@@ -417,7 +417,8 @@ def pip_install_extra() -> None:
     """Install packages not present in the axolotl base image."""
     import subprocess
     pkgs = [
-        "compressed-tensors",  # required for Neural Magic / llm-compressor AWQ models
+        "transformers>=5.5.0",  # gemma4 added in 5.5.0; axolotl image ships older version
+        "compressed-tensors",   # required for Neural Magic / llm-compressor AWQ models
     ]
     log.info("pip install extra packages: %s", pkgs)
     subprocess.run(
