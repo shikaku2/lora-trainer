@@ -73,6 +73,7 @@ def base_config(args) -> dict:
         # and ORed with user setting — cannot be forced False. axolotl 0.16.1 also requires
         # is_multimodal=True for gemma4 to inject mm_token_type_ids (needed even for text-only training).
         "load_in_4bit":                True,
+        "low_cpu_mem_usage":           True,
         "adapter":           "lora",
         "lora_r":            args.rank,
         "lora_alpha":        args.rank * 2,
